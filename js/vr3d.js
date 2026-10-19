@@ -267,6 +267,6 @@ export class VRMode {
     v.renderFrame(this.terrRT, this.outRT, null, 1, steps, 1.8, false, e);
     const vp = xc.viewport;
     target.viewport.set(vp.x, vp.y, vp.z, vp.w);
-    v.display(this.outRT, target);
+    v.display(this.outRT, target, 1);
   }
 }

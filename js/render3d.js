@@ -811,6 +811,8 @@ in vec2 vUv;
 out vec4 outColor;
 uniform sampler2D uSrc;
 uniform float uExposure;
+uniform vec2 uTexel;         // 1 / source size
+uniform float uDenoise;      // 0..1: 3x3 filter over a single-sample (moving / VR) frame
 vec3 aces(vec3 x) {
   // ACES fitted (Stephen Hill)
   const mat3 i = mat3(0.59719, 0.07600, 0.02840, 0.35458, 0.90834, 0.13383, 0.04823, 0.01566, 0.83777);
@@ -820,10 +822,20 @@ vec3 aces(vec3 x) {
   vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
   return clamp(o * (a / b), 0.0, 1.0);
 }
+vec3 tone(vec2 uv) { return pow(aces(texture(uSrc, uv).rgb * uExposure), vec3(1.0 / 2.2)); }
 void main() {
-  vec3 c = texture(uSrc, vUv).rgb * uExposure;
-  c = aces(c);
-  c = pow(c, vec3(1.0 / 2.2));
+  vec3 c = tone(vUv);
+  // a frame that is not accumulated is one jittered ray-march sample per pixel: where the ray first
+  // lands inside a cloud varies from pixel to pixel, so the cloud surface comes out speckled. The
+  // jitter is interleaved gradient noise, whose offsets are spread evenly over every 3x3 block, so
+  // averaging that block (after tone mapping, so no single bright sample dominates) recovers a
+  // nearly stratified 9-sample estimate
+  if (uDenoise > 0.0) {
+    vec3 s = c;
+    for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++)
+      if (x != 0 || y != 0) s += tone(vUv + vec2(float(x), float(y)) * uTexel);
+    c = mix(c, s / 9.0, uDenoise);
+  }
   float d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
   outColor = vec4(c + d / 255.0, 1.0);
 }`;
@@ -1269,7 +1281,7 @@ class Viewer {
     });
     this.cloudScene = new THREE.Scene();
     const cm = new THREE.Mesh(quad, this.cloudMat); cm.frustumCulled = false; this.cloudScene.add(cm);
-    this.dispMat = raw(DISPLAY_FS, { uSrc: { value: null }, uExposure: { value: 1 } });
+    this.dispMat = raw(DISPLAY_FS, { uSrc: { value: null }, uExposure: { value: 1 }, uTexel: { value: new THREE.Vector2() }, uDenoise: { value: 0 } });
     this.dispScene = new THREE.Scene();
     const dm = new THREE.Mesh(quad, this.dispMat); dm.frustumCulled = false; this.dispScene.add(dm);
 
@@ -2250,11 +2262,11 @@ class Viewer {
     if (moving) {
       this.adaptMove(dt);
       this.renderFrame(this.terrLoRT, this.loRT, null, 1, q.moveSteps, 1.8, false);
-      this.display(this.loRT);
+      this.display(this.loRT, null, 1);
     } else if (this.frame < q.frames) {
       const tgt = this.frame % 2 ? this.accB : this.accA, prev = this.frame % 2 ? this.accA : this.accB;
       this.renderFrame(this.terrRT, tgt, prev, 1 / (this.frame + 1), q.steps, 1, true);
-      this.display(tgt);
+      this.display(tgt, null, clamp(1 - this.frame / 8, 0, 1)); // fade the filter out as frames accumulate
       this.frame++;
     } else if (this.displayOnly) {
       this.display(this.frame % 2 ? this.accA : this.accB);
@@ -2301,9 +2313,11 @@ class Viewer {
     if (cam.view && cam.view.enabled) cam.clearViewOffset();
   }
 
-  display(rt, target = null) {
+  display(rt, target = null, denoise = 0) {
     const r = this.renderer;
     this.dispMat.uniforms.uSrc.value = rt.texture;
+    this.dispMat.uniforms.uTexel.value.set(1 / rt.width, 1 / rt.height);
+    this.dispMat.uniforms.uDenoise.value = denoise;
     this.dispMat.uniforms.uExposure.value = this.params.exposure * 0.62;
     r.setRenderTarget(target);
     r.render(this.dispScene, this.quadCam);
