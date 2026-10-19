@@ -1,0 +1,11 @@
+{
+  "name": "Satellite Viewer",
+  "short_name": "SatViewer",
+  "description": "Live GOES and Himawari imagery on a 3D globe, decoded in the browser.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#060b14",
+  "theme_color": "#060b14",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

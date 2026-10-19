@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#060b14">
+<meta name="description" content="Live GOES and Himawari satellite imagery on a 3D globe, decoded in your browser from the raw NOAA files.">
+<title>Satellite Viewer</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css">
+<link rel="stylesheet" href="css/app.css">
+<link rel="modulepreload" href="js/app.js">
+<link rel="modulepreload" href="js/map.js">
+<link rel="modulepreload" href="vendor/maplibre/maplibre-gl.mjs">
+<link rel="modulepreload" href="vendor/maplibre/maplibre-gl-shared.mjs">
+<link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
+<link rel="preconnect" href="https://noaa-goes19.s3.amazonaws.com" crossorigin>
+<link rel="preconnect" href="https://gibs.earthdata.nasa.gov" crossorigin>
+<script src="config.js"></script>
+</head>
+<body>
+<div id="map" aria-label="Satellite map"></div>
+<div id="loadbar"><div></div></div>
+
+<header id="top">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="5.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 15.5c3.5 2.6 14.5-3.3 18-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="20.2" cy="7.6" r="1.6" fill="currentColor"/></svg>
+    <span class="brand-text">Satellite Viewer</span>
+  </div>
+  <div id="status" class="chip hidden" role="status" aria-live="polite"><span class="spinner"></span><span id="statusText"></span></div>
+  <div class="top-actions">
+    <button id="btnNorth" class="ib" title="Reset north and tilt" aria-label="Reset north and tilt">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3l4 9h-8z" fill="#ff6b6b"/><path d="M12 21l-4-9h8z" fill="currentColor" opacity=".55"/></svg>
+    </button>
+    <button id="btn3d" class="ib" title="3D cloud volume" aria-label="Open the 3D cloud volume" aria-pressed="false">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z M4 7.5l8 4.5 8-4.5 M12 12v9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="btnPanel" class="ib" title="Layers and settings" aria-label="Open layers and settings" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3l9 5-9 5-9-5zM3 13l9 5 9-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+</header>
+
+<aside id="panel" aria-label="Layers and settings">
+  <div class="sheet-grip" id="grip" aria-hidden="true"><span></span></div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="data" class="on">Data</button>
+    <button role="tab" data-tab="display">Display</button>
+    <button role="tab" data-tab="three">3D</button>
+    <button role="tab" data-tab="settings">Settings</button>
+  </nav>
+  <div class="panel-body">
+    <section data-tab="data" class="on">
+      <h3>Satellite</h3>
+      <div id="satList" class="sat-grid"></div>
+      <h3>Sector</h3>
+      <div id="sectorList" class="chips"></div>
+      <div id="sectorNote" class="note"></div>
+      <div id="customTools" class="hidden">
+        <button id="drawBtn" class="btn primary"><svg viewBox="0 0 24 24" width="15" height="15"><rect x="4" y="5" width="16" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-dasharray="3 2.4"/></svg>Draw box</button>
+        <span id="bboxText" class="note mono"></span>
+      </div>
+      <h3 class="prod-h">Product <input id="prodSearch" type="search" placeholder="Filter…" aria-label="Filter products"></h3>
+      <div id="prodGroups" class="chips small"></div>
+      <div id="prodList" role="listbox" aria-label="Products"></div>
+    </section>
+
+    <section data-tab="display">
+      <h3>Display</h3>
+      <label class="row" id="cmapRow">Colour table <select id="cmapSel"></select></label>
+      <label class="row">Opacity <input type="range" id="opacity" min="0" max="100" value="100"><span id="opacityVal" class="mono val">100%</span></label>
+      <label class="row">Base map <select id="themeSel"><option value="dark">Dark</option><option value="light">Light</option><option value="satellite">Satellite imagery</option></select></label>
+      <label class="row check"><input type="checkbox" id="globeChk" checked> Globe projection</label>
+      <label class="row check"><input type="checkbox" id="labelsChk" checked> Place labels</label>
+      <label class="row check"><input type="checkbox" id="bordersChk" checked> Coastlines &amp; borders</label>
+      <label class="row check"><input type="checkbox" id="statesChk" checked> State / province lines</label>
+      <label class="row check"><input type="checkbox" id="gratChk" checked> Latitude / longitude grid</label>
+      <label class="row check"><input type="checkbox" id="outlineChk" checked> Sector outline</label>
+      <label class="row check"><input type="checkbox" id="nightChk" checked> Day / night shading</label>
+      <label class="row check" title="NASA Black Marble city lights under GeoColor's night side"><input type="checkbox" id="lightsChk" checked> City lights (GeoColor)</label>
+    </section>
+
+    <section data-tab="three">
+      <h3>3D cloud volume</h3>
+      <button id="volBtn" class="btn vol"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z M4 7.5l8 4.5 8-4.5 M12 12v9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>Open 3D cloud volume</button>
+      <div class="note">Opens a 3D view beside the map (below it on phones). Draw a box or an area (20–1500 km) over the clouds: they are rebuilt as volumetric clouds from the satellite bands (cloud-top height, optical depth, bases by cloud type) over real terrain. Drag the corners to reshape, the green dot to move the 3D camera.</div>
+      <h3>3D on the map</h3>
+      <label class="row check" title="Raise the imagery into a relief: infrared by cloud-top temperature (colder = taller), visible by reflectance"><input type="checkbox" id="threeChk"> 3D cloud tops</label>
+      <label class="row">Height ×<input type="range" id="exag" min="1" max="60" value="10"><span id="exagVal" class="mono val">10×</span></label>
+      <label class="row check" title="Drape the imagery over real ground elevation"><input type="checkbox" id="terrainChk"> 3D terrain (mountains)</label>
+      <label class="row">Terrain ×<input type="range" id="terrainExag" min="0.5" max="6" step="0.1" value="1.5"><span id="terrainExagVal" class="mono val">1.5×</span></label>
+      <div class="chips">
+        <button class="chip-btn" data-view="top">Top-down</button>
+        <button class="chip-btn" data-view="tilt">Tilt 50°</button>
+        <button class="chip-btn" data-view="low">Low 70°</button>
+        <button class="chip-btn" data-view="spin">Rotate 90°</button>
+      </div>
+      <div class="note">Desktop: right-drag or Ctrl-drag to tilt / rotate. Touch: two-finger twist rotates, two-finger slide up / down tilts.</div>
+    </section>
+
+    <section data-tab="settings">
+      <h3>Animation</h3>
+      <label class="row">Loop length <select id="framesSel"></select></label>
+      <label class="row">Speed <select id="speedSel"><option value="450">Slow</option><option value="220" selected>Normal</option><option value="110">Fast</option></select></label>
+      <label class="row check"><input type="checkbox" id="blendChk"> Cross-fade frames</label>
+      <label class="row">Fade time <input type="range" id="blendMs" min="50" max="1000" step="10" value="300"><span id="blendVal" class="mono val">300 ms</span></label>
+      <h3>Performance</h3>
+      <label class="row">Quality <select id="qualitySel">
+        <option value="auto">Auto</option><option value="low">Low · phones, old PCs</option><option value="medium">Medium</option><option value="high">High · desktop GPU</option>
+      </select></label>
+      <label class="row">GOES data <select id="resSel">
+        <option value="cmip">2 km multi-band (light)</option><option value="native">Native 0.5–2 km (heavy)</option>
+      </select></label>
+      <div id="perfInfo" class="note mono"></div>
+      <label class="row check"><input type="checkbox" id="fpsChk"> Show frame rate</label>
+      <h3>About</h3>
+      <div class="note">Imagery is decoded in your browser from the raw NOAA Open Data Dissemination files (GOES ABI NetCDF‑4 / HDF5, Himawari HSD bzip2). Map: MapLibre GL JS, OpenFreeMap / OpenStreetMap; terrain: AWS Terrain Tiles; 3D ground imagery: Esri; city lights: NASA GIBS. Nearest-pixel display, no smoothing.</div>
+    </section>
+  </div>
+</aside>
+
+<div id="legend" class="glass hidden"><div id="legendTitle"></div><div id="legendBar"></div><div id="legendTicks" class="mono"></div></div>
+<div id="probe" class="glass mono hidden"></div>
+<div id="fps" class="mono hidden"></div>
+<div id="drawHint" class="glass hidden"></div>
+
+<div id="volBar" class="glass hidden">
+  <span class="vb-title"><svg viewBox="0 0 24 24" width="15" height="15"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z M4 7.5l8 4.5 8-4.5 M12 12v9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>3D</span>
+  <button data-t="box">Box</button><button data-t="area">Area</button><button data-t="view">Whole view</button><button data-t="clear">Clear</button>
+  <button data-t="exit" aria-label="Close the 3D view"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+</div>
+<footer id="timeline" class="glass">
+  <div id="archiveBar" class="hidden">
+    <button id="arcPrev" class="ib sm" aria-label="Previous window"><svg viewBox="0 0 24 24" width="15" height="15"><path d="M14.5 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+    <label class="ab-field"><span>Ends (UTC)</span><input type="datetime-local" id="arcEnd" step="60"></label>
+    <button id="arcNext" class="ib sm" aria-label="Next window"><svg viewBox="0 0 24 24" width="15" height="15"><path d="M9.5 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+    <label class="ab-field"><span>Span</span><select id="arcSpan"><option value="1">1 h</option><option value="3" selected>3 h</option><option value="6">6 h</option><option value="12">12 h</option><option value="24">24 h</option></select></label>
+    <button id="arcGo" class="btn primary sm">Load</button>
+  </div>
+  <div class="tl-row">
+    <div id="modeSeg" class="seg" role="group" aria-label="Live or archive">
+      <button data-m="live" class="on">Live</button><button data-m="archive">Archive</button>
+    </div>
+    <button id="playBtn" class="ib play" aria-label="Play loop"><svg id="playIcon" viewBox="0 0 24 24" width="20" height="20"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg></button>
+    <div class="tl-mid">
+      <div id="tlTrack"><div id="tlFill"></div><div id="tlTicks"></div><input id="tlRange" type="range" min="0" max="0" value="0" aria-label="Frame"></div>
+    </div>
+    <div class="tl-time">
+      <div id="timeMain" class="mono">—</div>
+      <div id="timeSub"><span id="liveBadge" class="badge">LIVE</span> <span id="timeAge"></span></div>
+    </div>
+  </div>
+</footer>
+
+<div id="toast" class="hidden" role="alert"></div>
+<noscript><div class="nojs">This viewer needs JavaScript and WebGL.</div></noscript>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
