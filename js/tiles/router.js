@@ -2,7 +2,7 @@
  * copied) and MapLibre's satv:// / satdem:// tile requests are routed to the owner. */
 
 export class TileRouter {
-  constructor(n) {
+  constructor(n, { cacheMB = 0 } = {}) {
     this.workers = [];
     this.pending = new Map();
     this.owner = new Map(); // frame id -> worker
@@ -16,6 +16,7 @@ export class TileRouter {
         if (p) (ok ? p.resolve(result) : p.reject(new Error(error)));
       };
       this.workers.push(w);
+      if (cacheMB) this._call(w, 'config', { cacheMB: cacheMB / n });
     }
   }
 

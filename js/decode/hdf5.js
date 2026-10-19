@@ -436,6 +436,8 @@ export class H5File {
     const hp = await this._fheap(fheap);
     const recs = await this._btree2(nameBt);
     await Promise.all(recs.map(async (r) => {
+      // 'huge' heap objects (big array attributes, e.g. GK2A's) are skipped: nothing reads them
+      if (((r[0] >> 4) & 3) === 1) return;
       const obj = await this._fheapObj(hp, r.subarray(0, hp.idLen));
       const a = this._attr(obj);
       if (a) out.set(a.name, a.value);

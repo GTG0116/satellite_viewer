@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#060b14">
-<meta name="description" content="Live GOES and Himawari satellite imagery on a 3D globe, decoded in your browser from the raw NOAA files.">
+<meta name="description" content="Live GOES, Himawari and GK2A satellite imagery on a 3D globe, decoded in your browser from the raw NOAA files.">
 <title>Satellite Viewer</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -16,6 +16,8 @@
 <link rel="modulepreload" href="vendor/maplibre/maplibre-gl-shared.mjs">
 <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
 <link rel="preconnect" href="https://noaa-goes19.s3.amazonaws.com" crossorigin>
+<link rel="dns-prefetch" href="https://noaa-himawari9.s3.amazonaws.com">
+<link rel="dns-prefetch" href="https://noaa-gk2a-pds.s3.amazonaws.com">
 <link rel="preconnect" href="https://gibs.earthdata.nasa.gov" crossorigin>
 <script src="config.js"></script>
 </head>
@@ -115,7 +117,7 @@
       <div id="perfInfo" class="note mono"></div>
       <label class="row check"><input type="checkbox" id="fpsChk"> Show frame rate</label>
       <h3>About</h3>
-      <div class="note">Imagery is decoded in your browser from the raw NOAA Open Data Dissemination files (GOES ABI NetCDF‑4 / HDF5, Himawari HSD bzip2). Map: MapLibre GL JS, OpenFreeMap / OpenStreetMap; terrain: AWS Terrain Tiles; 3D ground imagery: Esri; city lights: NASA GIBS. Nearest-pixel display, no smoothing.</div>
+      <div class="note">Imagery is decoded in your browser from the raw NOAA Open Data Dissemination files (GOES ABI NetCDF‑4 / HDF5, Himawari HSD bzip2, GK2A AMI NetCDF‑4). Map: MapLibre GL JS, OpenFreeMap / OpenStreetMap; terrain: AWS Terrain Tiles; 3D ground imagery: Esri; city lights: NASA GIBS. Nearest-pixel display, no smoothing.</div>
     </section>
   </div>
 </aside>

@@ -17,6 +17,8 @@
 import * as THREE from '../vendor/three/three.module.min.js';
 import { OrbitControls } from '../vendor/three/OrbitControls.js';
 
+import { VRMode, VR_HELP } from './vr3d.js';
+
 const R_E = 6371;
 const SKY_W = 256, SKY_H = 96;
 const MAX_LOOP = 24;
@@ -850,6 +852,7 @@ const IC = {
   film: '<svg viewBox="0 0 24 24" width="16" height="16"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 4v16M16 4v16M4 9h4M4 15h4M16 9h4M16 15h4" stroke="currentColor" stroke-width="1.5"/></svg>',
   info: '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 11v5.5M12 7.6v.4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>',
   reset: '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M4.5 12a7.5 7.5 0 107.5-7.5c-2.3 0-4.3 1-5.7 2.6M4.5 4v4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  vr: '<svg viewBox="0 0 24 24" width="19" height="19"><path d="M3.5 8.5A1.5 1.5 0 015 7h14a1.5 1.5 0 011.5 1.5v7A1.5 1.5 0 0119 17h-4.2l-1.6-2.4a1.4 1.4 0 00-2.4 0L9.2 17H5a1.5 1.5 0 01-1.5-1.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="8" cy="11.6" r="1.6" fill="currentColor"/><circle cx="16" cy="11.6" r="1.6" fill="currentColor"/></svg>',
   chev: '<svg viewBox="0 0 24 24" width="14" height="14" class="chev"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
 };
 
@@ -874,6 +877,12 @@ class Viewer {
     this.initRenderer();
     this.bindControls();
     this.setWaiting();
+    this.vr = new VRMode(this, THREE);
+    VRMode.supported().then((ok) => {
+      if (!ok || this.disposed) return;
+      this.$('r3dVrBtn').classList.remove('hidden');
+      this.$('r3dHelp').textContent += ' · VR headset: the goggles button';
+    });
   }
 
   // ---------------------------------------------------------------- DOM
@@ -889,6 +898,7 @@ class Viewer {
         <div class="r3d-tab glass">${IC.cube}<b id="r3dTitle">3D Volume</b><span id="r3dSub"></span>
           <button class="r3d-ib sm" data-act="close" title="Close the 3D view">${IC.x}</button></div>
         <div class="r3d-tools glass">
+          <button class="r3d-ib hidden" data-act="vr" id="r3dVrBtn" title="View in a VR headset. ${VR_HELP}">${IC.vr}</button>
           <button class="r3d-ib" data-act="export" title="Export the view as PNG">${IC.dl}</button>
           <button class="r3d-ib hidden" data-act="play" id="r3dPlay" title="Play the loop in 3D">${IC.play}</button>
           <button class="r3d-ib" data-act="window" id="r3dWinBtn" title="Full window">${IC.expand}</button>
@@ -1014,12 +1024,28 @@ class Viewer {
     if (a === 'close') { if (o.onClose) o.onClose(); else this.close(); }
     else if (a === 'export') this.save();
     else if (a === 'play') this.togglePlay();
+    else if (a === 'vr') this.toggleVR();
     else if (a === 'window') this.setMax(!this.max);
     else if (a === 'menu') this.menu();
     else if (a === 'newbox') { this.menu(false); if (o.onNewBox) o.onNewBox(); }
     else if (a === 'cancel') { if (o.onCancel) o.onCancel(); }
     else if (a === 'reset') this.reset();
     else if (['ground', 'recon', 'overview', 'tallest', 'top'].includes(a)) { if (this.S) this.setView(a); }
+  }
+
+  toggleVR() {
+    if (!this.vr.presenting && !this.S) { this.toast('Pick an area first, then enter VR', { spin: false, ms: 3000 }); return; }
+    this.menu(false);
+    this.vr.toggle().catch((e) => this.toast(`VR failed: ${e.message}`, { spin: false, ms: 6000 }));
+  }
+
+  onVR(on) {
+    const b = this.$('r3dVrBtn');
+    b.classList.toggle('on', on);
+    b.title = on ? 'Exit VR' : `View in a VR headset. ${VR_HELP}`;
+    this.toast(on ? 'In VR · put on the headset (left stick fly, right stick elevation / turn, grip + right stick cloud height)' : null,
+      { spin: false, ms: on ? 8000 : 0 });
+    this.touch();
   }
 
   menu(on) {
@@ -1257,7 +1283,8 @@ class Viewer {
     this.controls.zoomToCursor = true;
     this.lastT = performance.now();
     this.loop = this.loop.bind(this);
-    requestAnimationFrame(this.loop);
+    // three.js drives the loop: window frames normally, the headset's frames in VR
+    renderer.setAnimationLoop(this.loop);
   }
 
   // ---------------------------------------------------------------- regions
@@ -1307,6 +1334,7 @@ class Viewer {
   }
 
   clearRegion() {
+    if (this.vr.presenting) this.vr.exit();
     ++this.seq;
     this.stopPlay();
     this.disposeScene();
@@ -1846,7 +1874,7 @@ class Viewer {
 
   // ---------------------------------------------------------------- render targets
   resize() {
-    if (!this.renderer || this.disposed) return;
+    if (!this.renderer || this.disposed || this.renderer.xr.isPresenting) return;
     const W = this.canvas.clientWidth, H = this.canvas.clientHeight;
     if (!W || !H) return;
     this.renderer.setSize(W, H, false);
@@ -1864,9 +1892,24 @@ class Viewer {
     this.terrRT = mk(fw, fh, THREE.FloatType);
     this.accA = mk(fw, fh, THREE.HalfFloatType);
     this.accB = mk(fw, fh, THREE.HalfFloatType);
-    this.terrLoRT = mk(W * q.moveScale, H * q.moveScale, THREE.FloatType);
-    this.loRT = mk(W * q.moveScale, H * q.moveScale, THREE.HalfFloatType);
+    const ms = q.moveScale * (this.moveDyn || 1);
+    this.terrLoRT = mk(W * ms, H * ms, THREE.FloatType);
+    this.loRT = mk(W * ms, H * ms, THREE.HalfFloatType);
     this.touch();
+  }
+
+  // Weak GPUs: while the camera moves, the interactive render drops resolution until it keeps up
+  // (~22 fps) and climbs back when there is headroom.
+  adaptMove(dt) {
+    this.moveEma = this.moveEma ? this.moveEma * 0.85 + dt * 0.15 : dt;
+    this.moveAdaptT = (this.moveAdaptT || 0) + dt;
+    if (this.moveAdaptT < 0.4) return;
+    this.moveAdaptT = 0;
+    const old = this.moveDyn || 1;
+    let d = old;
+    if (this.moveEma > 1 / 22) d = Math.max(0.4, d * 0.85);
+    else if (this.moveEma < 1 / 45) d = Math.min(1, d * 1.08);
+    if (Math.abs(d - old) / old > 0.06) { this.moveDyn = d; this.resize(); }
   }
 
   // ---------------------------------------------------------------- camera
@@ -2182,11 +2225,11 @@ class Viewer {
   // ---------------------------------------------------------------- frame loop
   loop(now) {
     if (this.disposed) return;
-    requestAnimationFrame(this.loop);
-    const dt = Math.min(0.1, (now - this.lastT) / 1000);
+    const dt = Math.min(0.1, Math.max(0, (now - this.lastT) / 1000));
     this.lastT = now;
     if (!this.S || !this.terrRT) return;
     if (this.playing) this.advancePlay(dt);
+    if (this.vr.presenting) { this.vr.render(dt); return; }
     if (this.fly(dt)) this.touch();
     this.controls.update();
     this.clampCamera();
@@ -2205,6 +2248,7 @@ class Viewer {
     if (this.wasMoving && !moving) this.updateLocalSky(false);
     this.wasMoving = moving;
     if (moving) {
+      this.adaptMove(dt);
       this.renderFrame(this.terrLoRT, this.loRT, null, 1, q.moveSteps, 1.8, false);
       this.display(this.loRT);
     } else if (this.frame < q.frames) {
@@ -2218,13 +2262,13 @@ class Viewer {
     }
   }
 
-  renderFrame(terrRT, outRT, prevRT, blend, steps, stepScale, jitter) {
-    const r = this.renderer, cam = this.camera, U = this.U, p = this.params, S = this.S;
+  renderFrame(terrRT, outRT, prevRT, blend, steps, stepScale, jitter, cam = this.camera) {
+    const r = this.renderer, U = this.U, p = this.params, S = this.S;
     const W = outRT.width, H = outRT.height;
     if (jitter && this.frame > 0) {
       const h = (i, b) => { let f = 1, x = 0; while (i > 0) { f /= b; x += f * (i % b); i = Math.floor(i / b); } return x; };
       cam.setViewOffset(W, H, h(this.frame, 2) - 0.5, h(this.frame, 3) - 0.5, W, H);
-    } else cam.clearViewOffset();
+    } else if (cam.view && cam.view.enabled) cam.clearViewOffset(); // (VR eyes carry their own projection)
     cam.updateMatrixWorld();
     U.uVex.value = p.vex;
     U.uPixAng.value = 2 * Math.tan(cam.fov * Math.PI / 360) / H;
@@ -2254,14 +2298,14 @@ class Viewer {
     cu.uCamWorld.value.copy(cam.matrixWorld);
     r.setRenderTarget(outRT);
     r.render(this.cloudScene, this.quadCam);
-    cam.clearViewOffset();
+    if (cam.view && cam.view.enabled) cam.clearViewOffset();
   }
 
-  display(rt) {
+  display(rt, target = null) {
     const r = this.renderer;
     this.dispMat.uniforms.uSrc.value = rt.texture;
     this.dispMat.uniforms.uExposure.value = this.params.exposure * 0.62;
-    r.setRenderTarget(null);
+    r.setRenderTarget(target);
     r.render(this.dispScene, this.quadCam);
   }
 
@@ -2277,6 +2321,8 @@ class Viewer {
 
   close() {
     if (this.disposed) return;
+    if (this.vr.presenting) this.vr.exit();
+    this.renderer.setAnimationLoop(null);
     this.disposed = true;
     ++this.seq;
     window.removeEventListener('keydown', this.onKeyDown, true);

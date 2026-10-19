@@ -16,30 +16,49 @@ export const AHI_BANDS = {
   13: ['"Clean" Longwave IR', 10.41, 'ir', 2], 14: ['Longwave IR', 11.24, 'ir', 2], 15: ['"Dirty" Longwave IR', 12.38, 'ir', 2],
   16: ['CO₂ Longwave IR', 13.28, 'ir', 2],
 };
+// GK2A AMI: same band order as AHI except 5 = 1.38 µm cirrus and 6 = 1.61 µm (no 2.2 µm channel)
+export const AMI_BANDS = {
+  1: ['Blue', 0.47, 'vis', 1], 2: ['Green', 0.51, 'vis', 1], 3: ['Red', 0.64, 'vis', 0.5], 4: ['Veggie', 0.86, 'vis', 1],
+  5: ['Cirrus', 1.38, 'vis', 2], 6: ['Snow/Ice', 1.61, 'vis', 2], 7: ['Shortwave Window', 3.83, 'ir', 2],
+  8: ['Upper-Level Water Vapor', 6.21, 'ir', 2], 9: ['Mid-Level Water Vapor', 6.94, 'ir', 2],
+  10: ['Lower-Level Water Vapor', 7.33, 'ir', 2], 11: ['Cloud-Top Phase', 8.59, 'ir', 2], 12: ['Ozone', 9.62, 'ir', 2],
+  13: ['"Clean" Longwave IR', 10.35, 'ir', 2], 14: ['Longwave IR', 11.23, 'ir', 2], 15: ['"Dirty" Longwave IR', 12.36, 'ir', 2],
+  16: ['CO₂ Longwave IR', 13.29, 'ir', 2],
+};
+export const AMI_CHANNELS = ['', 'VI004', 'VI005', 'VI006', 'VI008', 'NR013', 'NR016', 'SW038', 'WV063', 'WV069', 'WV073',
+  'IR087', 'IR096', 'IR105', 'IR112', 'IR123', 'IR133'];
 export const GOES_ROLE = { blue: 1, red: 2, veg: 3, cirrus: 4, snow: 5, cps: 6, swir: 7, wv_upper: 8, wv_mid: 9, wv_low: 10, ir86: 11, ozone: 12, ir103: 13, ir112: 14, ir123: 15, co2: 16 };
 export const AHI_ROLE = { blue: 1, green: 2, red: 3, veg: 4, snow: 5, cps: 6, swir: 7, wv_upper: 8, wv_mid: 9, wv_low: 10, ir86: 11, ozone: 12, ir103: 13, ir112: 14, ir123: 15, co2: 16 };
+export const AMI_ROLE = { blue: 1, green: 2, red: 3, veg: 4, cirrus: 5, snow: 6, swir: 7, wv_upper: 8, wv_mid: 9, wv_low: 10, ir86: 11, ozone: 12, ir103: 13, ir112: 14, ir123: 15, co2: 16 };
 
 const GOES_EAST_SECTORS = [['full', 'Full Disk'], ['conus', 'CONUS'], ['meso1', 'Meso 1'], ['meso2', 'Meso 2'], ['custom', 'Custom']];
 const GOES_WEST_SECTORS = [['full', 'Full Disk'], ['pacus', 'PACUS'], ['meso1', 'Meso 1'], ['meso2', 'Meso 2'], ['custom', 'Custom']];
 const AHI_SECTORS = [['full', 'Full Disk'], ['japan', 'Japan'], ['target', 'Target'], ['custom', 'Custom']];
+const AMI_SECTORS = [['full', 'Full Disk'], ['la', 'Local Area'], ['custom', 'Custom']];
 
 export const SECTOR_NOTES = {
   full: 'Whole disk · every 10 min', conus: 'Continental US · every 5 min', pacus: 'Pacific US · every 5 min',
   meso1: 'Movable 1000 km box · every minute', meso2: 'Movable 1000 km box · every minute',
-  japan: 'Japan area · every 2.5 min', target: 'Movable target · every 2.5 min', custom: 'Draw a box · only the rows inside are downloaded',
+  japan: 'Japan area · every 2.5 min', target: 'Movable target · every 2.5 min', la: 'Korea / East Asia 1000 km box · every 2 min', custom: 'Draw a box · only the rows inside are downloaded',
 };
 
 export const SATS = {
   goes19: { name: 'GOES-19', sub: 'GOES-East · 75.2°W', kind: 'goes', bucket: 'noaa-goes19', tag: 'G19', lon: -75.2, local: 'conus', sectors: GOES_EAST_SECTORS, start: '2024-10-10' },
   goes18: { name: 'GOES-18', sub: 'GOES-West · 137.0°W', kind: 'goes', bucket: 'noaa-goes18', tag: 'G18', lon: -137.0, local: 'pacus', sectors: GOES_WEST_SECTORS, start: '2022-05-11' },
   himawari9: { name: 'Himawari-9', sub: 'Japan · 140.7°E', kind: 'ahi', bucket: 'noaa-himawari9', tag: 'H09', lon: 140.7, sectors: AHI_SECTORS, start: '2022-10-28' },
+  gk2a: { name: 'GK2A', sub: 'Korea · 128.2°E', kind: 'ami', bucket: 'noaa-gk2a-pds', tag: 'GK2A', lon: 128.2, sectors: AMI_SECTORS, start: '2023-02-16' },
   goes16: { name: 'GOES-16', sub: 'GOES-East · 2017–2025', kind: 'goes', bucket: 'noaa-goes16', tag: 'G16', lon: -75.2, local: 'conus', sectors: GOES_EAST_SECTORS, retired: true, start: '2017-02-28', end: '2025-04-07' },
   goes17: { name: 'GOES-17', sub: 'GOES-West · 2018–2023', kind: 'goes', bucket: 'noaa-goes17', tag: 'G17', lon: -137.2, local: 'pacus', sectors: GOES_WEST_SECTORS, retired: true, start: '2018-08-28', end: '2023-01-10' },
   himawari8: { name: 'Himawari-8', sub: 'Japan · 2015–2022', kind: 'ahi', bucket: 'noaa-himawari8', tag: 'H08', lon: 140.7, sectors: AHI_SECTORS, retired: true, start: '2015-07-07', end: '2022-12-13' },
 };
 
-export const bandsOf = (sat) => (SATS[sat].kind === 'goes' ? GOES_BANDS : AHI_BANDS);
-export const rolesOf = (sat) => (SATS[sat].kind === 'goes' ? GOES_ROLE : AHI_ROLE);
+export const bandsOf = (sat) => ({ goes: GOES_BANDS, ahi: AHI_BANDS, ami: AMI_BANDS })[SATS[sat].kind];
+export const rolesOf = (sat) => ({ goes: GOES_ROLE, ahi: AHI_ROLE, ami: AMI_ROLE })[SATS[sat].kind];
+/** Short band name as the instrument calls it: C13 (ABI), B13 (AHI), IR105 (AMI). */
+export const bandLabel = (sat, b) => {
+  const k = SATS[sat].kind;
+  return k === 'ami' ? AMI_CHANNELS[b] : `${k === 'goes' ? 'C' : 'B'}${String(b).padStart(2, '0')}`;
+};
 export const bandRes = (sat, b) => bandsOf(sat)[b][3];
 
 // RGB composites: roles ('?' = optional) ; the reference role drives 3D heights and probing
@@ -81,26 +100,28 @@ export function bandDefaultCmap(b) {
 /** AHI band numbers differ from ABI (AHI 3 = red, 2 = green); map an ABI-style band to the
  *  default colour table via its role so both instruments look alike. */
 export function cmapFor(sat, b) {
-  if (SATS[sat].kind === 'ahi') return b <= 4 ? 'vis' : b <= 6 ? 'gray' : bandDefaultCmap(b);
+  if (SATS[sat].kind !== 'goes') return b <= 4 ? 'vis' : b <= 6 ? 'gray' : bandDefaultCmap(b);
   return bandDefaultCmap(b);
 }
 
 export function rangeFor(sat, b, cmap) {
   if (FIXED_RANGE[cmap]) return FIXED_RANGE[cmap];
-  if (SATS[sat].kind === 'ahi' && b <= 4) return [0, 1.1];
+  const k = SATS[sat].kind;
+  if (k !== 'goes' && b <= 4) return [0, 1.1];
+  if (k === 'ami' && (b === 5 || b === 6)) return b === 5 ? [0, 0.5] : [0, 0.8];
   return BAND_RANGE[b];
 }
 
 /** Products of a satellite: RGB composites then single bands. */
 export function products(sat) {
-  const roles = rolesOf(sat), bands = bandsOf(sat), pre = SATS[sat].kind === 'goes' ? 'C' : 'B';
+  const roles = rolesOf(sat), bands = bandsOf(sat);
   const out = [];
   for (const [id, r] of Object.entries(RGBS)) {
     if (r.roles.every((x) => x.endsWith('?') || x in roles)) out.push({ id, name: r.name, group: 'RGB', desc: r.desc, kind: 'rgb' });
   }
   for (const [b, [name, wl, kind, res]] of Object.entries(bands)) {
     const n = +b;
-    out.push({ id: `b${String(n).padStart(2, '0')}`, band: n, name: `${pre}${String(n).padStart(2, '0')} · ${wl} µm`, label: name,
+    out.push({ id: `b${String(n).padStart(2, '0')}`, band: n, name: `${bandLabel(sat, n)} · ${wl} µm`, label: name,
       group: kind === 'vis' ? 'Visible' : 'Infrared', desc: `native ${res} km`, kind,
       cmaps: kind === 'vis' ? VIS_CMAPS : IR_CMAPS, cmap: cmapFor(sat, n) });
   }

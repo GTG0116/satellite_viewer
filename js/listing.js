@@ -45,7 +45,7 @@ const pad = (n, w = 2) => String(n).padStart(w, '0');
 const doy = (d) => Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - Date.UTC(d.getUTCFullYear(), 0, 1)) / 864e5) + 1;
 
 // ------------------------------------------------------------------ GOES
-export const CADENCE_MIN = { full: 10, conus: 5, pacus: 5, meso1: 1, meso2: 1, custom: 10, japan: 2.5, target: 2.5 };
+export const CADENCE_MIN = { full: 10, conus: 5, pacus: 5, meso1: 1, meso2: 1, custom: 10, japan: 2.5, target: 2.5, la: 2 };
 
 /** Product folder + filename token of a GOES sector for a data family ('cmip' | 'l1b'). */
 export function goesSource(sector, family) {
@@ -125,6 +125,34 @@ export async function ahiScans(sat, sector, { end, hours, signal }) {
   return scans;
 }
 
+// ------------------------------------------------------------------ GK2A
+// AMI/L1B/{FD,LA}/YYYYMM/DD/HH/gk2a_ami_le1b_<channel>_<fd|la><res>ge_YYYYMMDDHHMM.nc
+const RE_AMI = /gk2a_ami_le1b_(\w{5})_(fd|la)\d{3}ge_(\d{12})\.nc$/;
+const AMI_BAND = { vi004: 1, vi005: 2, vi006: 3, vi008: 4, nr013: 5, nr016: 6, sw038: 7, wv063: 8, wv069: 9, wv073: 10,
+  ir087: 11, ir096: 12, ir105: 13, ir112: 14, ir123: 15, ir133: 16 };
+
+export async function amiScans(sat, sector, { end, hours, signal }) {
+  const { bucket } = SATS[sat];
+  const area = sector === 'la' ? 'LA' : 'FD';
+  const now = Date.now();
+  end = end || new Date();
+  const lists = await Promise.all(hourFolders(end, hours).map((t) => {
+    const pfx = `AMI/L1B/${area}/${t.getUTCFullYear()}${pad(t.getUTCMonth() + 1)}/${pad(t.getUTCDate())}/${pad(t.getUTCHours())}/`;
+    const recent = now - t.getTime() < 75 * 60e3;
+    return listKeys(bucket, pfx, recent ? 30e3 : 6 * 3600e3, signal).catch(() => []);
+  }));
+  const scans = new Map();
+  for (const keys of lists) for (const { key, size } of keys) {
+    const m = RE_AMI.exec(key);
+    const band = m && AMI_BAND[m[1]];
+    if (!band) continue;
+    const d = m[3], ms = Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8), +d.slice(8, 10), +d.slice(10, 12));
+    if (!scans.has(ms)) scans.set(ms, { t: new Date(ms), bands: {} });
+    scans.get(ms).bands[band] = { key, size };
+  }
+  return scans;
+}
+
 const complete = (e) => Array.isArray(e) ? e.length > 0 && e.length === e[0].nseg : !!e;
 
 /**
@@ -138,9 +166,9 @@ export async function availableScans(sat, sector, family, bands, { limit = 12, e
   if (live) hours = Math.min(24, Math.max(sector === 'full' || sector === 'custom' ? 1.5 : 1, (limit * cad) / 60 + 0.4));
   else hours = Math.min(24, Math.max(0.1, hours || 1));
   const kind = SATS[sat].kind;
-  const scans = kind === 'goes'
-    ? await goesScans(sat, sector, family, { end: end || new Date(), hours, signal })
-    : await ahiScans(sat, sector, { end: end || new Date(), hours, signal });
+  const range = { end: end || new Date(), hours, signal };
+  const scans = kind === 'goes' ? await goesScans(sat, sector, family, range)
+    : kind === 'ami' ? await amiScans(sat, sector, range) : await ahiScans(sat, sector, range);
   const need = kind === 'goes' && family === 'cmip' ? [0] : bands;
   let ok = [...scans.values()].filter((s) => need.every((b) => complete(s.bands[b])));
   if (!live) { const lo = end.getTime() - hours * 3600e3; ok = ok.filter((s) => s.t >= lo && s.t <= end); }

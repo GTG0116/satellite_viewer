@@ -35,7 +35,8 @@ function buildStyle(theme, opts) {
   ];
   if (theme === 'satellite') layers.push({ id: 'imagery', type: 'raster', source: 'imagery', paint: { 'raster-fade-duration': 0 } });
   else {
-    layers.push({ id: 'relief', type: 'raster', source: 'relief', maxzoom: 7, paint: { 'raster-opacity': theme === 'dark' ? 0.32 : 0.55, 'raster-saturation': theme === 'dark' ? -0.6 : -0.2, 'raster-brightness-max': theme === 'dark' ? 0.55 : 1, 'raster-fade-duration': 0 } });
+    // the shaded-relief base layer is one more raster to download and draw: skipped on weak devices
+    if (!opts.lite) layers.push({ id: 'relief', type: 'raster', source: 'relief', maxzoom: 7, paint: { 'raster-opacity': theme === 'dark' ? 0.32 : 0.55, 'raster-saturation': theme === 'dark' ? -0.6 : -0.2, 'raster-brightness-max': theme === 'dark' ? 0.55 : 1, 'raster-fade-duration': 0 } });
     layers.push({ id: 'water', type: 'fill', source: 'omt', 'source-layer': 'water', filter: ['!=', ['get', 'brunnel'], 'tunnel'], paint: { 'fill-color': T.water, 'fill-opacity': theme === 'dark' ? 0.86 : 0.9 } });
   }
   layers.push(
@@ -89,11 +90,16 @@ function buildStyle(theme, opts) {
       'dem-ground': { type: 'raster-dem', tiles: [TERRARIUM], encoding: 'terrarium', tileSize: 256, maxzoom: 13, attribution: 'Terrain: AWS Terrain Tiles' },
     },
     layers,
-    sky: {
-      'sky-color': theme === 'light' ? '#a9c8ec' : '#0a1a33', 'horizon-color': theme === 'light' ? '#dce9f7' : '#1f4f91',
-      'fog-color': theme === 'light' ? '#dfe7f0' : '#0b1626', 'sky-horizon-blend': 0.6, 'horizon-fog-blend': 0.5, 'fog-ground-blend': 0.9,
-      'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0],
-    },
+    sky: skySpec(theme, opts.lite),
+  };
+}
+
+function skySpec(theme, lite) {
+  return {
+    'sky-color': theme === 'light' ? '#a9c8ec' : '#0a1a33', 'horizon-color': theme === 'light' ? '#dce9f7' : '#1f4f91',
+    'fog-color': theme === 'light' ? '#dfe7f0' : '#0b1626', 'sky-horizon-blend': 0.6, 'horizon-fog-blend': 0.5, 'fog-ground-blend': 0.9,
+    // the globe's atmosphere glow is a full-screen pass every frame
+    'atmosphere-blend': lite ? 0 : ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0],
   };
 }
 
@@ -162,9 +168,9 @@ function gridBounds(g) {
 export class SatMap {
   constructor(container, { tier, theme = 'dark', globe = true, labels = true, camera, onMove } = {}) {
     this.tier = tier;
-    this.opts = { theme, globe, labels };
+    this.opts = { theme, globe, labels, lite: !!tier.lite };
     this.tileSize = tier.name === 'low' ? 256 : 512;
-    this.router = new TileRouter(tier.tileWorkers);
+    this.router = new TileRouter(tier.tileWorkers, { cacheMB: tier.tileCacheMB });
     this.layer = { a: null, b: null }; // ping-pong: {src id, frame}
     this.front = 'a';
     this.lutId = '';
@@ -183,6 +189,8 @@ export class SatMap {
       refreshExpiredTiles: false, cancelPendingTileRequestsWhileZooming: true, renderWorldCopies: false,
     });
     this.map.addControl(new maplibregl.ScaleControl({ maxWidth: 100 }), 'bottom-left');
+    // phones: the attribution starts folded (its (i) button opens it), so it never covers the scale bar
+    if (innerWidth < 640) this.map.once('load', () => container.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show'));
     this.ready = new Promise((r) => this.map.once('load', () => { this._onStyle(); r(); }));
     this.map.on('move', () => onMove && onMove());
     this.map.on('style.load', () => { if (this._styled) this._onStyle(); });
@@ -228,6 +236,17 @@ export class SatMap {
     if (on && !this.map.getLayer('label-country')) this.map.setStyle(buildStyle(this.opts.theme, this.opts), { diff: false });
   }
   setProjection(globe) { this.opts.globe = globe; this.map.setProjection({ type: globe ? 'globe' : 'mercator' }); }
+
+  /** Lighter rendering for a device that turned out to be struggling: 1x pixels, no relief layer,
+   *  no atmosphere glow. */
+  lighten() {
+    const m = this.map;
+    this.opts.lite = true;
+    m.setPixelRatio(1);
+    if (m.getLayer('relief')) m.setLayoutProperty('relief', 'visibility', 'none');
+    try { m.setSky(skySpec(this.opts.theme, true)); } catch (e) { /* style still loading */ }
+  }
+
   show(layerIds, on) {
     for (const id of [].concat(layerIds)) if (this.map.getLayer(id)) this.map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
   }
@@ -317,9 +336,15 @@ export class SatMap {
     map.setPaintProperty(id, 'raster-opacity-transition', { duration: blendMs, delay: 0 });
     map.setPaintProperty(id, 'raster-opacity', this.opacity);
     if (fid && map.getLayer(fid)) {
-      // the old frame stays fully visible under the fading-in new one, then is hidden
+      // the old frame stays fully visible under the fading-in new one, then goes: a layer kept at
+      // near-zero opacity would still be drawn on every map frame and hold its tiles on the GPU
       map.moveLayer(id, 'sat-anchor');
-      setTimeout(() => { if (map.getLayer(fid) && this.layer[this.front]?.id !== fid) map.setPaintProperty(fid, 'raster-opacity', HIDDEN); }, blendMs + 30);
+      setTimeout(() => {
+        if (!map.getLayer(fid) || this.layer[this.front]?.id === fid) return;
+        map.removeLayer(fid);
+        if (map.getSource(fid)) map.removeSource(fid);
+        for (const s of ['a', 'b']) if (this.layer[s]?.id === fid) this.layer[s] = null;
+      }, blendMs + 30);
     }
     this.front = back;
     if (this.cloud3d.on) this._cloudDemSoon(f);

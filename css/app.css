@@ -15,6 +15,10 @@
   --tl-h: 64px;
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
+  /* distance from the bottom of the viewport (--tl-top) / of the map (--tl-map) to the top of the
+     timeline; app.js keeps both current as the timeline grows (archive bar, two-row phone layout) */
+  --tl-top: calc(var(--tl-h) + 14px + var(--safe-b));
+  --tl-map: calc(var(--tl-h) + 14px + var(--safe-b));
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --text-2: #b9c6d8; --text-3: #8293ab; --line-2: rgba(160, 190, 230, 0.24); --vol: #3ddc97; --vol-soft: rgba(61, 220, 151, 0.14); --r3d-w: 50vw;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
@@ -35,9 +39,9 @@ body.drawing #map .maplibregl-canvas { cursor: crosshair; }
 .maplibregl-ctrl-attrib { background: rgba(6, 11, 20, .6) !important; color: var(--muted); font-size: 10px; }
 .maplibregl-ctrl-attrib a { color: var(--muted) !important; }
 .maplibregl-ctrl-attrib-button { filter: invert(1); }
-.maplibregl-ctrl-bottom-left { bottom: calc(var(--tl-h) + 24px + var(--safe-b)); left: calc(var(--gut) - 10px); }
+.maplibregl-ctrl-bottom-left { bottom: calc(var(--tl-map) + 10px); left: calc(var(--gut) - 10px); }
 .maplibregl-ctrl-scale { background: rgba(6, 11, 20, .55); color: var(--muted); border-color: var(--muted); font-size: 10px; }
-.maplibregl-ctrl-bottom-right { bottom: calc(var(--tl-h) + 24px + var(--safe-b)); }
+.maplibregl-ctrl-bottom-right { bottom: calc(var(--tl-map) + 10px); }
 body.tier-low .maplibregl-ctrl-scale { display: none; }
 
 .glass { background: var(--glass); border: 1px solid var(--line); border-radius: var(--r); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
@@ -118,19 +122,20 @@ input[type=search], input[type=datetime-local], input[type=number] { background:
 #customTools { display: flex; align-items: center; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
 
 /* ------------------------------------------------------------ legend / probe */
-#legend { position: fixed; left: var(--gut); bottom: calc(var(--tl-h) + 56px + var(--safe-b)); padding: 8px 10px; width: 290px; z-index: 12; }
+#legend { position: fixed; left: var(--gut); bottom: calc(var(--tl-top) + 42px); padding: 8px 10px; width: 290px; z-index: 12; }
 #legendTitle { font-size: 12px; color: var(--muted); margin-bottom: 5px; }
 #legendBar { height: 10px; border-radius: 3px; }
 #legendTicks { display: flex; justify-content: space-between; margin-top: 3px; color: var(--muted); font-size: 11px; }
-#probe { position: fixed; left: var(--gut); bottom: calc(var(--tl-h) + 126px + var(--safe-b)); padding: 7px 10px; z-index: 12; font-size: 12px; max-width: 290px; pointer-events: none; }
+#probe { position: fixed; left: var(--gut); bottom: calc(var(--tl-top) + 112px); padding: 7px 10px; z-index: 12; font-size: 12px; max-width: 290px; pointer-events: none; }
 #probe b { color: var(--accent-2); font-weight: 600; }
 #fps { position: fixed; top: calc(60px + var(--safe-t)); left: var(--gut); z-index: 12; font-size: 11px; color: var(--ok); background: rgba(0,0,0,.45); padding: 2px 6px; border-radius: 6px; pointer-events: none; }
 #drawHint { position: fixed; top: calc(62px + var(--safe-t)); left: 50%; transform: translateX(-50%); padding: 8px 14px; z-index: 22; font-size: 13px; white-space: nowrap; }
 
 /* ------------------------------------------------------------ timeline */
-#timeline { position: fixed; z-index: 16; left: 50%; transform: translateX(-50%); bottom: calc(14px + var(--safe-b)); width: min(860px, calc(100vw - var(--panel-w) - 3 * var(--gut)));
-  padding: 8px 12px; }
-body.panel-collapsed #timeline { width: min(860px, calc(100vw - 2 * var(--gut))); }
+/* centred in the space left of the side panel, so a taller timeline (archive bar) never runs under it */
+#timeline { position: fixed; z-index: 16; left: calc((100vw - var(--panel-w) - var(--gut)) / 2); transform: translateX(-50%); bottom: calc(14px + var(--safe-b));
+  width: min(860px, calc(100vw - var(--panel-w) - 3 * var(--gut))); padding: 8px 12px; }
+body.panel-collapsed #timeline { left: 50%; width: min(860px, calc(100vw - 2 * var(--gut))); }
 .tl-row { display: flex; align-items: center; gap: 12px; min-height: 46px; }
 .seg { display: flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; flex: none; }
 .seg button { border: 0; background: none; padding: 6px 10px; cursor: pointer; font-size: 12px; min-height: 32px; }
@@ -167,7 +172,7 @@ body.panel-collapsed #timeline { width: min(860px, calc(100vw - 2 * var(--gut)))
   .tabs button.on { color: #fff; border-bottom-color: var(--accent); }
   section { display: none; }
   section.on { display: block; }
-  #timeline { width: calc(100vw - 2 * var(--gut)); }
+  #timeline, body.panel-collapsed #timeline { left: 50%; width: calc(100vw - 2 * var(--gut)); }
   body.panel-open::after { content: ""; position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 24; }
 }
 
@@ -185,30 +190,35 @@ body.panel-collapsed #timeline { width: min(860px, calc(100vw - 2 * var(--gut)))
   .tabs { padding-top: 0; }
   .sat-grid { grid-template-columns: repeat(2, 1fr); }
   .row select { max-width: 62%; }
-  #timeline { left: var(--gut); right: var(--gut); transform: none; width: auto; bottom: calc(8px + var(--safe-b)); padding: 6px 8px; }
+  #timeline, body.panel-collapsed #timeline { left: var(--gut); right: var(--gut); transform: none; width: auto; bottom: calc(8px + var(--safe-b)); padding: 6px 8px; }
   .tl-row { gap: 8px; }
   .seg button { padding: 6px 8px; }
   .tl-time { min-width: 92px; }
   #timeMain { font-size: 12px; }
   #legend { left: var(--gut); right: auto; width: min(260px, calc(100vw - 2 * var(--gut))); top: calc(60px + var(--safe-t)); bottom: auto; padding: 6px 8px; }
-  #probe { left: var(--gut); right: var(--gut); max-width: none; bottom: calc(var(--tl-h) + 20px + var(--safe-b)); }
+  #probe { left: var(--gut); right: var(--gut); max-width: none; bottom: calc(var(--tl-top) + 46px); }
   #fps { top: calc(118px + var(--safe-t)); }
   #archiveBar { gap: 6px; }
   .ab-field span { display: none; }
   #drawHint { white-space: normal; width: calc(100vw - 2 * var(--gut)); text-align: center; }
 }
-@media (max-width: 400px) {
-  .seg button { padding: 5px 6px; font-size: 11px; }
-  .ib.play { width: 40px; height: 40px; }
-  .tl-time { min-width: 80px; }
-  #timeMain { font-size: 11px; }
+/* narrow phones: two rows (mode + time, then play + slider) so the slider keeps its width */
+@media (max-width: 479px) {
+  .tl-row { display: grid; grid-template-columns: 40px auto 1fr; grid-template-areas: "seg seg time" "play mid mid"; gap: 6px 10px; }
+  #modeSeg { grid-area: seg; justify-self: start; }
+  .tl-row .ib.play { grid-area: play; width: 40px; height: 40px; }
+  .tl-mid { grid-area: mid; }
+  .tl-time { grid-area: time; min-width: 0; }
+  #timeMain { font-size: 12px; }
+  #archiveBar .ab-field:first-of-type { flex: 1; min-width: 0; }
+  #archiveBar input[type=datetime-local] { width: 100%; min-width: 0; }
 }
 @media (hover: none) { .prod:hover { background: none; } }
 
 /* ------------------------------------------------------------ 3D volume (split view) */
 .btn.vol { width: 100%; justify-content: center; background: var(--vol-soft); border-color: var(--vol); color: var(--vol); font-weight: 600; }
 .btn.vol.active { background: var(--vol); color: #03170e; }
-#volBar { position: fixed; z-index: 17; left: 50%; transform: translateX(-50%); bottom: calc(var(--tl-h) + 34px + var(--safe-b)); display: flex; align-items: center; gap: 2px; padding: 4px; max-width: calc(100vw - 2 * var(--gut)); overflow-x: auto; scrollbar-width: none; }
+#volBar { position: fixed; z-index: 17; left: 50%; transform: translateX(-50%); bottom: calc(var(--tl-top) + 20px); display: flex; align-items: center; gap: 2px; padding: 4px; max-width: calc(100vw - 2 * var(--gut)); overflow-x: auto; scrollbar-width: none; }
 #volBar .vb-title { display: flex; align-items: center; gap: 6px; padding: 0 9px 0 6px; font-weight: 600; font-size: 12px; border-right: 1px solid var(--line); margin-right: 2px; white-space: nowrap; }
 #volBar .vb-title svg { color: var(--vol); }
 #volBar button { padding: 7px 11px; border-radius: 8px; border: 0; background: transparent; cursor: pointer; color: var(--text-2); font-size: 12.5px; white-space: nowrap; min-height: 34px; }
@@ -216,7 +226,9 @@ body.panel-collapsed #timeline { width: min(860px, calc(100vw - 2 * var(--gut)))
 #volBar button.on { background: var(--vol-soft); color: var(--vol); }
 body.r3d-split #map { right: var(--r3d-w); width: auto; }
 body.r3d-split #panel { display: none; }
-body.r3d-split #timeline { left: calc((100vw - var(--r3d-w)) / 2); width: min(760px, calc(100vw - var(--r3d-w) - 2 * var(--gut))); }
+body.r3d-split #timeline { left: calc((100vw - var(--r3d-w)) / 2); right: auto; transform: translateX(-50%); width: min(760px, calc(100vw - var(--r3d-w) - 2 * var(--gut))); }
+body.r3d-split #top { right: calc(var(--r3d-w) + var(--gut)); }
+body.r3d-split .tl-row { display: flex; }
 body.r3d-split #volBar { left: calc((100vw - var(--r3d-w)) / 2); max-width: calc(100vw - var(--r3d-w) - 2 * var(--gut)); }
 body.r3d-split #toast, body.r3d-split #drawHint { left: calc((100vw - var(--r3d-w)) / 2); }
 body.r3d-split .tl-time { min-width: 0; }
@@ -286,16 +298,50 @@ body.r3d-max .r3d-splitter { display: none; }
 #r3d .row input[type=range] { flex: 1; accent-color: var(--vol); }
 #r3d .note { color: var(--text-3); font-size: 11.5px; }
 @media (max-width: 1099px) {
+  .r3d-splitter, .r3d-help { display: none; }
+  body.r3d-split #archiveBar, body.r3d-split #modeSeg, body.r3d-split .brand-text { display: none; }
+  body.r3d-split .brand { padding: 8px; }
+  body.r3d-split #status { max-width: calc(100vw - var(--r3d-w) - 200px); }
+}
+/* tablets and phones held upright: the map above, the 3D view below; the 3D tools move to the
+   top of the map so they never sit on the timeline */
+@media (max-width: 1099px) and (orientation: portrait) {
   body.r3d-split #map { right: 0; bottom: 50vh; height: auto; }
-  body.r3d-split #timeline { left: var(--gut); right: var(--gut); width: auto; transform: none; bottom: calc(50vh + 8px); }
-  body.r3d-split #volBar { left: 50%; bottom: calc(50vh + var(--tl-h) + 20px); max-width: calc(100vw - 2 * var(--gut)); }
-  body.r3d-split #toast, body.r3d-split #drawHint { left: 50%; }
+  body.r3d-split #top { right: var(--gut); }
+  body.r3d-split #status { max-width: calc(100vw - 210px); }
+  body.r3d-split #timeline { left: var(--gut); right: var(--gut); width: auto; transform: none; bottom: calc(50vh + 8px); padding: 4px 8px; }
+  body.r3d-split .tl-row { min-height: 40px; }
+  body.r3d-split .ib.play { width: 36px; height: 36px; }
+  body.r3d-split #volBar { left: 50%; top: calc(58px + var(--safe-t)); bottom: auto; max-width: calc(100vw - 2 * var(--gut)); }
+  body.r3d-split #volBar button { min-height: 30px; padding: 5px 9px; }
+  body.r3d-split #toast { left: 50%; top: calc(104px + var(--safe-t)); }
+  body.r3d-split #drawHint { left: 50%; top: calc(102px + var(--safe-t)); padding: 5px 10px; font-size: 12px; }
   #r3d { top: 50vh; width: 100vw; border-left: 0; border-top: 1px solid var(--line-2); }
   body.r3d-max #r3d { top: 0; }
   body.r3d-max #timeline, body.r3d-max #volBar { display: none; }
-  .r3d-splitter, .r3d-help { display: none; }
   .r3d-head { top: 8px; }
   .r3d-menu { top: 50px; }
+}
+/* phones on their side: map and 3D view side by side (half the height each would be too little) */
+@media (max-width: 1099px) and (orientation: landscape) {
+  body.r3d-split #volBar { left: calc((100vw - var(--r3d-w)) / 2); max-width: calc(100vw - var(--r3d-w) - 2 * var(--gut)); }
+  body.r3d-split #toast, body.r3d-split #drawHint { left: calc((100vw - var(--r3d-w)) / 2); max-width: calc(100vw - var(--r3d-w) - 2 * var(--gut)); white-space: normal; }
+  body.r3d-split .tl-time { display: none; }
+  .r3d-menu { max-height: calc(100% - 60px); }
+}
+@media (max-width: 639px) {
+  .r3d-menu { width: auto; left: 8px; right: 8px; max-width: none; }
+  .r3d-tab span { display: none; }
+  body.r3d-split .tl-time { display: none; }
+}
+/* short landscape screens (phones on their side): tighter chrome */
+@media (max-height: 480px) and (orientation: landscape) {
+  :root { --gut: 10px; }
+  #top { top: calc(6px + var(--safe-t)); }
+  #timeline { bottom: calc(6px + var(--safe-b)); padding: 4px 10px; }
+  .tl-row { min-height: 40px; }
+  .ib.play { width: 38px; height: 38px; }
+  #legend { width: 240px; padding: 6px 8px; }
 }
 @media (max-width: 639px) {
   .r3d-menu { width: auto; left: 8px; right: 8px; max-width: none; }

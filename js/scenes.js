@@ -9,9 +9,10 @@ import { subgrid, windowForBBox, resKm } from './geo.js';
 const DIMS2 = {
   goes: { full: [5424, 5424], conus: [1500, 2500], pacus: [1500, 2500], meso1: [500, 500], meso2: [500, 500] },
   ahi: { full: [5500, 5500], japan: [1200, 1500], target: [500, 500] },
+  ami: { full: [5500, 5500], la: [500, 500] },
 };
 // finest output (px per 2 km px) each sector may use: 4 = 0.5 km
-const CAP = { full: 1, conus: 2, pacus: 2, meso1: 4, meso2: 4, japan: 2, target: 4, custom: 4 };
+const CAP = { full: 1, conus: 2, pacus: 2, meso1: 4, meso2: 4, japan: 2, target: 4, la: 4, custom: 4 };
 const KO = [4, 2, 1, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 6, 1 / 8, 1 / 10, 1 / 12, 1 / 16];
 
 export function fdGrid2km(sat) {
@@ -20,14 +21,15 @@ export function fdGrid2km(sat) {
     return { lon0: s.local === 'conus' ? -75 : -137, H: 35786023 + 6378137, req: 6378137, rpol: 6356752.31414, sweep: 'x',
       x0: -0.151844, dx: 5.6e-05, y0: 0.151844, dy: -5.6e-05, ny: 5424, nx: 5424 };
   }
-  const D = Math.PI / 180, sx = 65536 / 20466275;
-  return { lon0: 140.7, H: 42164000, req: 6378137, rpol: 6356752.3, sweep: 'y',
+  const D = Math.PI / 180, sx = 65536 / (s.kind === 'ami' ? 20425338.90333935 : 20466275);
+  return { lon0: s.lon, H: 42164000, req: 6378137, rpol: 6356752.3, sweep: 'y',
     x0: (1 - 2750.5) * sx * D, dx: sx * D, y0: -(1 - 2750.5) * sx * D, dy: -sx * D, ny: 5500, nx: 5500 };
 }
 
-/** Data family: 'cmip' (GOES L2 MCMIP, all bands at 2 km in one file), 'l1b' (GOES native) or 'ahi'. */
+/** Data family: 'cmip' (GOES L2 MCMIP, all bands at 2 km in one file), 'l1b' (GOES native), 'ahi' or 'ami'. */
 export function familyFor(sat, resolution) {
-  return SATS[sat].kind === 'ahi' ? 'ahi' : resolution === 'native' ? 'l1b' : 'cmip';
+  const k = SATS[sat].kind;
+  return k !== 'goes' ? k : resolution === 'native' ? 'l1b' : 'cmip';
 }
 
 /**
@@ -74,9 +76,18 @@ export function estimateBytes(p, scan) {
     if (p.family === 'cmip') { const f = scan.bands[0]; return f ? f.size * (p.bands.length / 16) * rows * 1.05 : 0; }
     return p.bands.reduce((s, b) => s + (scan.bands[b]?.size || 0), 0) * rows;
   }
+  if (kind === 'ami') return p.bands.reduce((s, b) => s + (scan.bands[b]?.size || 0) * amiChunkShare(p, b), 0);
   let s = 0;
   for (const b of p.bands) for (const seg of scan.bands[b] || []) if (segmentNeeded(p, b, seg)) s += seg.size;
   return s;
+}
+
+/** Share of a GK2A file's 1375² chunks a window touches (full / local-area sectors: all). */
+function amiChunkShare(p, b) {
+  if (p.sector !== 'custom') return 1;
+  const cs = 1375 / p.k[b], n = Math.ceil(5500 / cs), [r0, r1, c0, c1] = p.win2;
+  const span = (a, z) => Math.floor((z - 1) / cs) - Math.floor(a / cs) + 1;
+  return (span(r0, r1) * span(c0, c1)) / (n * n);
 }
 
 function segmentNeeded(p, b, seg) {
@@ -107,6 +118,14 @@ export async function loadBands(p, scan, pool, { pri = 5, signal } = {}) {
         win: p.full ? null : p.win2, ko: p.ko }, { pri, signal });
       bytes += r.bytes;
       r.bands.forEach((o, i) => { bandData[vars[i].b] = o; });
+    }));
+  } else if (kind === 'ami') {
+    await Promise.all(p.bands.map(async (b) => {
+      const f = scan.bands[b];
+      const r = await pool.run('amiFile', { url: s3url(bucket, f.key), size: f.size, k: p.k[b], win: p.full ? null : p.win2, ko: p.ko },
+        { pri, signal });
+      bytes += r.bytes;
+      bandData[b] = r;
     }));
   } else {
     await Promise.all(p.bands.map(async (b) => {

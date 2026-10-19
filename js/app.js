@@ -1,9 +1,9 @@
 /* Satellite Viewer (static web edition): UI, state, loading and playback on a MapLibre map. */
-import { SATS, products, RGBS, CMAPS, buildLut, lutCss, rangeFor, SECTOR_NOTES, bandsOf, rolesOf } from './catalog.js';
+import { SATS, products, RGBS, CMAPS, buildLut, lutCss, rangeFor, SECTOR_NOTES, bandsOf, rolesOf, bandLabel } from './catalog.js';
 import { plan, scansFor, loadFrame, loadBands, estimateBytes, frameKey } from './scenes.js';
 import { SatMap, unwrapLine } from './map.js';
 import { Pool } from './pool.js';
-import { probeDevice, autoTier, makeTier } from './perf.js';
+import { probeDevice, autoTier, makeTier, minTier, lowerTier, FrameWatch } from './perf.js';
 import { outline, gridCenter, resKm, lonlatToRC } from './geo.js';
 import { setProxy, availableScans } from './listing.js';
 import { Volume } from './volume.js';
@@ -24,7 +24,8 @@ function save() {
 }
 
 const device = probeDevice();
-const tierName = saved.quality && saved.quality !== 'auto' ? saved.quality : autoTier(device);
+// Auto quality: the device's tier, capped lower if this browser already ran out of speed or memory
+const tierName = saved.quality && saved.quality !== 'auto' ? saved.quality : minTier(autoTier(device), saved.autoCap || 'high');
 const tier = makeTier(tierName, device);
 document.body.classList.add(`tier-${tier.name}`);
 
@@ -170,11 +171,41 @@ async function reload({ fit = false } = {}) {
     perfInfo(f, performance.now() - t0);
   } catch (e) {
     if (token !== cur.token || /aborted/.test(e.message)) return;
-    status(); toast(`Loading failed: ${e.message}`); console.error(e); return;
+    status();
+    if (outOfMemory(e)) return;
+    toast(`Loading failed: ${e.message}`); console.error(e); return;
   }
   status();
   preload(token);
 }
+
+// ------------------------------------------------------------------ weak devices
+const isOOM = (e) => /allocation failed|out of memory|invalid array length|Array buffer/i.test(String(e && e.message || e));
+/** The browser ran out of memory decoding a frame: step the quality down (auto) or halve the loop. */
+function outOfMemory(e) {
+  if (!isOOM(e)) return false;
+  if (S.quality === 'auto' && tier.name !== 'low') {
+    S.autoCap = lowerTier(tier.name);
+    S.nFrames = Math.min(S.nFrames, makeTier(S.autoCap, device).defFrames);
+    save();
+    toast('This device ran out of memory — switching to lighter settings…', 'info', 4000);
+    setTimeout(() => location.reload(), 1500);
+  } else if (S.nFrames > 1) {
+    S.nFrames = Math.max(1, Math.floor(S.nFrames / 2));
+    buildFrames(); save();
+    toast(`Out of memory — loop shortened to ${S.nFrames} frame${S.nFrames > 1 ? 's' : ''}.`, 'info', 5000);
+    setTimeout(() => reload(), 300);
+  } else toast('Out of memory — try a smaller sector or an infrared product.', 'error', 8000);
+  return true;
+}
+// map frame times while it animates: a device too slow for its tier is stepped down (auto quality)
+const frameWatch = new FrameWatch((ms) => {
+  if (S.quality !== 'auto' || tier.name === 'low') return;
+  S.autoCap = lowerTier(tier.name);
+  save();
+  sm.lighten();
+  toast(`The map is running slowly here (${Math.round(1000 / ms)} fps) — lighter settings applied; the next visit starts at ${S.autoCap} quality.`, 'info', 7000);
+});
 
 function sample(all, n) {
   all = [...all].sort((a, b) => a.t - b.t);
@@ -189,10 +220,15 @@ async function preload(token) {
   if (n <= 1) return;
   let done = 1;
   status(`Loop frames 1/${n}`);
+  let oom = false;
   await Promise.all(cur.scans.slice(0, -1).reverse().map((scan, j) => getFrame(p, scan, 2 + j).then(() => {
     done++;
     if (token === cur.token) status(done < n ? `Loop frames ${done}/${n}` : '');
-  }).catch((e) => { if (!/aborted/.test(e.message)) console.warn('frame failed', e); })));
+  }).catch((e) => {
+    if (/aborted/.test(e.message)) return;
+    if (isOOM(e) && !oom && token === cur.token) { oom = true; cur.ac?.abort(); outOfMemory(e); }
+    else console.warn('frame failed', e);
+  })));
   if (token === cur.token) status();
 }
 
@@ -328,7 +364,7 @@ async function probeAt(lngLat, sticky) {
     if (seq !== probeSeq) return;
     if (!r || r.value === undefined) txt += ' · outside image';
     else {
-      const bn = bandsOf(f.sat)[r.band], label = `${satInfo().kind === 'goes' ? 'C' : 'B'}${p2(r.band)} ${bn ? bn[1] + ' µm' : ''}`;
+      const bn = bandsOf(f.sat)[r.band], label = `${bandLabel(f.sat, r.band)} ${bn ? bn[1] + ' µm' : ''}`;
       const v = r.value;
       txt += v !== v ? ` · <b>${label}</b> no data` : ` · <b>${label}</b> ${r.kind === 'refl' ? `${(v * 100).toFixed(1)}%` : `${v.toFixed(1)} K (${(v - 273.15).toFixed(1)} °C)`}`;
       if (r.rgb) txt += ` <span style="display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;background:rgb(${r.rgb})"></span>`;
@@ -399,7 +435,7 @@ const vol = new Volume({
   showFrameAt: (t) => { const i = cur.scans.findIndex((s) => s.t.toISOString() === t); if (i >= 0) show(i, { blend: false }); },
   satName: () => satInfo().name, productName: () => prodInfo().name,
   fields: volumeFields,
-  onLayout: () => {},
+  onLayout: () => layoutVars(),
 });
 
 /** Cloud fields for a 3D region: the bands the retrieval needs, at native resolution inside the box. */
@@ -416,7 +452,7 @@ async function volumeFields(r, progress = () => {}) {
   // the shown sector when it is a small native one holding the box (same scan), else a custom box
   const inside = (g) => [[w, s], [e, s], [e, n], [w, n]].every(([x, y]) => { const o = lonlatToRC(g, ((x + 540) % 360) - 180, y); return o && o[0] >= 0 && o[1] >= 0 && o[0] < g.ny && o[1] < g.nx; });
   let sector = 'custom', scan = null;
-  if (['meso1', 'meso2', 'target', 'japan'].includes(f.sector) && inside(f.grid)) { sector = f.sector; scan = f.scan; }
+  if (['meso1', 'meso2', 'target', 'japan', 'la'].includes(f.sector) && inside(f.grid)) { sector = f.sector; scan = f.scan; }
   const budget3 = { maxTex: 8192, framePx: tier.name === 'low' ? 4e6 : tier.name === 'medium' ? 9e6 : 25e6 };
   const p = plan({ sat: f.sat, sector, resolution: res, bbox: sector === 'custom' ? bbox : null, bandList }, budget3);
   if (!scan) {
@@ -438,8 +474,9 @@ async function volumeFields(r, progress = () => {}) {
     transfer.push(codes.buffer);
     bands[role] = { codes, w: d.w, h: d.h, grid: d.grid, kind: d.kind, resKm: resKm(d.grid) };
   }
-  const sources = Object.entries(want).filter(([role]) => bands[role]).map(([role, b]) => ({ role, product: `${satInfo().kind === 'goes' ? 'C' : 'B'}${p2(b)}`,
-    time: scan.t.toISOString(), source: p.family === 'cmip' ? 'ABI-L2-MCMIP' : p.family === 'l1b' ? 'ABI-L1b-Rad' : 'AHI-L1b HSD', res_km: +bands[role].resKm.toFixed(2) }));
+  const SRC = { cmip: 'ABI-L2-MCMIP', l1b: 'ABI-L1b-Rad', ahi: 'AHI-L1b HSD', ami: 'AMI-L1B NetCDF' };
+  const sources = Object.entries(want).filter(([role]) => bands[role]).map(([role, b]) => ({ role, product: bandLabel(f.sat, b),
+    time: scan.t.toISOString(), source: SRC[p.family], res_km: +bands[role].resKm.toFixed(2) }));
   return pool.run('retrieve3d', { bands, bbox: r.bbox, time: scan.t.toISOString(), sat: f.sat, sector, sources }, { pri: 0, transfer });
 }
 
@@ -536,7 +573,8 @@ function selectSat(id) {
   S.sat = id;
   if (!satInfo().sectors.some((s) => s[0] === S.sector)) S.sector = SATS[id].kind === 'goes' ? SATS[id].local : 'full';
   if (!prodList().some((p) => p.id === S.product)) S.product = 'geocolor';
-  if (SATS[id].kind === 'ahi' && S.sector === 'full' && tier.name !== 'high' && ['geocolor', 'truecolor', 'natural', 'dcp', 'daycon', 'sandwich', 'fire'].includes(S.product)) S.product = 'airmass';
+  // AHI / AMI full disks have no 2 km multi-band file: visible composites are far too heavy there
+  if (SATS[id].kind !== 'goes' && S.sector === 'full' && tier.name !== 'high' && ['geocolor', 'truecolor', 'natural', 'dcp', 'daycon', 'sandwich', 'fire'].includes(S.product)) S.product = tier.name === 'low' ? 'b13' : 'airmass';
   if (SATS[id].retired && !S.archive) startArchive(true);
   estimates = {};
   buildSats(); buildSectors(); buildProducts(); buildCmaps(); syncArchive();
@@ -564,6 +602,7 @@ function syncArchive() {
   inp.min = `${sat.start}T00:00`;
   inp.max = (sat.end ? new Date(sat.end) : new Date()).toISOString().slice(0, 16);
   if (on) { inp.value = new Date(S.archive.end).toISOString().slice(0, 16); $('arcSpan').value = S.archive.hours; }
+  layoutVars();
 }
 function startArchive(silent) {
   const sat = satInfo();
@@ -634,7 +673,7 @@ function view(v) {
 // ------------------------------------------------------------------ perf info / fps
 function perfInfo(f, ms) {
   $('perfInfo').innerHTML = [
-    `Quality: <b>${tier.label}</b>${S.quality === 'auto' ? ' (auto)' : ''} · max texture ${device.maxTex}`,
+    `Quality: <b>${tier.label}</b>${S.quality === 'auto' ? (S.autoCap && S.autoCap !== autoTier(device) ? ' (auto, lowered after this device struggled)' : ' (auto)') : ''} · max texture ${device.maxTex}`,
     `${device.renderer ? device.renderer.slice(0, 64) : 'GPU'} · ${device.cores} threads${device.mem ? ` · ${device.mem} GB` : ''}`,
     f ? `Frame ${f.w}×${f.h} @ ${resKm(f.grid).toFixed(2)} km · ${fmtMB(f.bytes)} downloaded · ${Math.round(ms || f.ms)} ms` : '',
     `Decoded frames ${fmtMB(memUsed())} of ${tier.memMB} MB · ${tier.workers} decode + ${tier.tileWorkers} tile workers`,
@@ -642,6 +681,8 @@ function perfInfo(f, ms) {
 }
 let fpsN = 0, fpsT = performance.now();
 map.on('render', () => {
+  // (not while the 3D view shares the GPU: its ray marching would count against the map)
+  if (S.quality === 'auto' && tier.name !== 'low' && !document.hidden && !vol.on) frameWatch.tick();
   if (!S.fps) return;
   fpsN++;
   const now = performance.now();
@@ -710,7 +751,11 @@ function bind() {
   $('speedSel').value = S.speed; $('speedSel').onchange = (e) => { S.speed = +e.target.value; save(); };
   $('framesSel').onchange = (e) => { S.nFrames = +e.target.value; save(); reload(); };
   $('qualitySel').value = S.quality;
-  $('qualitySel').onchange = (e) => { S.quality = e.target.value; save(); toast('Reloading with the new quality setting…', 'info', 3000); setTimeout(() => location.reload(), 700); };
+  $('qualitySel').onchange = (e) => {
+    S.quality = e.target.value;
+    delete S.autoCap; // picking Auto again re-tests the device
+    save(); toast('Reloading with the new quality setting…', 'info', 3000); setTimeout(() => location.reload(), 700);
+  };
   $('resSel').value = S.resolution;
   $('resSel').onchange = (e) => { S.resolution = e.target.value; estimates = {}; save(); reload(); };
   $('playBtn').onclick = () => (playing ? stopPlay() : startPlay());
@@ -755,6 +800,19 @@ setInterval(async () => {
     evict(); updateTicks();
   } catch (e) { /* try again next minute */ }
 }, REFRESH_MS);
+
+// ------------------------------------------------------------------ layout
+// Floating UI (legend, probe, scale bar, 3D tools) sits above the timeline, whose height changes
+// with the archive bar, the two-row phone layout and the 3D split: track where its top really is.
+function layoutVars() {
+  const r = $('timeline').getBoundingClientRect(), st = document.documentElement.style;
+  if (!r.height) return;
+  st.setProperty('--tl-top', `${Math.round(innerHeight - r.top)}px`);
+  st.setProperty('--tl-map', `${Math.max(0, Math.round($('map').getBoundingClientRect().bottom - r.top))}px`);
+}
+new ResizeObserver(layoutVars).observe($('timeline'));
+addEventListener('resize', layoutVars);
+layoutVars();
 
 // ------------------------------------------------------------------ boot
 bind();

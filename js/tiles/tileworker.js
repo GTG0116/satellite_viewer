@@ -8,12 +8,35 @@
  *   probe  values under a lon/lat
  * Tiles are returned as ImageBitmaps, so nothing is PNG-encoded or decoded on the way.
  */
-import { lonlatToRC } from '../geo.js';
+import { lonlatToRC, gridKey } from '../geo.js';
 import { Q16, NAN_CODE } from '../catalog.js';
 
 const frames = new Map();   // id -> frame
 const tables = new Map();   // lut id -> Uint32Array(65536) code -> RGBA
 const groundCache = new Map();
+
+// Tile -> frame pixel indices, shared by every frame on the same grid: a loop over a fixed sector
+// (full disk, CONUS, Japan, a custom box ...) navigates each map tile once instead of once per
+// frame, so playback only copies pixels. Bounded by bytes (Int32 per tile pixel).
+const indexCache = new Map(); // key -> Int32Array | null (no coverage)
+let indexBytes = 0, indexMax = 32e6;
+function cachedIndex(g, w, h, z, x, y, size) {
+  const k = `${gridKey(g)}|${w}|${h}|${z}/${x}/${y}/${size}`;
+  if (indexCache.has(k)) {
+    const v = indexCache.get(k);
+    indexCache.delete(k); indexCache.set(k, v); // most recently used last
+    return v;
+  }
+  const v = tileIndex(g, w, h, z, x, y, size);
+  indexCache.set(k, v);
+  indexBytes += v ? v.byteLength : 0;
+  for (const [ok, ov] of indexCache) {
+    if (indexBytes <= indexMax) break;
+    indexCache.delete(ok);
+    indexBytes -= ov ? ov.byteLength : 0;
+  }
+  return v;
+}
 
 const PI = Math.PI;
 const tileLon = (x, z) => (x / 2 ** z) * 360 - 180;
@@ -175,6 +198,7 @@ async function groundTile(z, x, y) {
 }
 
 const TASKS = {
+  config({ cacheMB }) { if (cacheMB) indexMax = cacheMB * 1e6; return { result: true }; },
   put({ id, frame }) { frames.set(id, frame); return { result: true }; },
   drop({ ids }) { for (const id of ids) frames.delete(id); return { result: true }; },
   lut({ id, lut, kind, vmin, vmax }) { tables.set(id, codeTable(lut, kind, vmin, vmax)); if (tables.size > 24) tables.delete(tables.keys().next().value); return { result: true }; },
@@ -183,7 +207,7 @@ const TASKS = {
     const f = frames.get(id);
     const out = new Uint8Array(size * size * 4);
     if (f) {
-      const idx = tileIndex(f.grid, f.w, f.h, z, x, y, size);
+      const idx = cachedIndex(f.grid, f.w, f.h, z, x, y, size);
       if (idx) {
         const o32 = new Uint32Array(out.buffer);
         if (f.mode === 'band') {
@@ -208,7 +232,7 @@ const TASKS = {
     const size = 256, f = frames.get(id);
     const hm = new Float32Array(size * size);
     if (f && f.ref) {
-      const r = f.ref, idx = tileIndex(r.grid, r.w, r.h, z, x, y, size);
+      const r = f.ref, idx = cachedIndex(r.grid, r.w, r.h, z, x, y, size);
       if (idx) {
         const H = heightKm(f);
         for (let i = 0; i < idx.length; i++) if (idx[i] >= 0) hm[i] = H(r.codes[idx[i]]) * 1000;
