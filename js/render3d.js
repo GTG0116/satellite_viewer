@@ -493,6 +493,8 @@ uniform vec2 uElevTexel;
 uniform vec4 uGround;
 uniform float uVex, uOuter, uSunVisible;
 uniform vec3 uSunColor, uSkyIrr, uCamPos;
+uniform sampler2D uShadowMap;  // precomputed cloud shadow optical depth over the box (VR)
+uniform float uShadowOn;
 ${COMMON}
 void main() {
   vec2 lm = lonMerc(vReal.xz);
@@ -507,7 +509,8 @@ void main() {
     n = normalize(vec3(-(eE - eW) * uVex / (2.0 * tk.x), 1.0, -(eS - eN) * uVex / (2.0 * tk.y)));
     vec2 buv = boxUv(vReal.xz);
     if (all(greaterThanEqual(buv, vec2(0.0))) && all(lessThanEqual(buv, vec2(1.0)))) {
-      od = cloudShadowOD(vReal, fract(ign(gl_FragCoord.xy) + uFrame * 0.618034), length(vWorld - uCamPos) * uPixAng);
+      od = uShadowOn > 0.5 ? textureLod(uShadowMap, buv, 0.0).r
+         : cloudShadowOD(vReal, fract(ign(gl_FragCoord.xy) + uFrame * 0.618034), length(vWorld - uCamPos) * uPixAng);
       vec4 c2 = fld2(buv);
       tauC = c2.b * smoothstep(0.03, 0.8, c2.a);
     }
@@ -539,6 +542,37 @@ void main() {
   outColor = vec4(col, length(vWorld - uCamPos));
 }`;
 
+// cloud shadow optical depth on the ground, over the cloud box (VR: replaces the per-pixel march
+// toward the sun in the terrain pass, which would cost 20 cloud lookups per pixel per eye per frame)
+const SHADOW_FS = /* glsl */`
+precision highp float;
+precision highp sampler2D;
+precision highp sampler3D;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uElev;
+uniform vec4 uGround;
+uniform float uBaseElev, uTexKm;
+${COMMON}
+void main() {
+  vec2 xz = mix(uBox.xy, uBox.zw, vUv);
+  vec2 guv = (xz - uGround.xy) / (uGround.zw - uGround.xy);
+  vec2 ed = min(guv, 1.0 - guv);
+  float e = mix(uBaseElev, textureLod(uElev, guv, 0.0).r, smoothstep(0.0, 0.05, min(ed.x, ed.y)));
+  float od = 0.0;
+  if (uSunDir.y >= 0.02) {
+    float a0 = max(uAlt.x, e), a1 = uAlt.y;
+    if (a1 > a0) {
+      // computed rarely, so more and finer samples than the per-pixel version (no jitter to hide steps)
+      float s0 = (a0 - e) / uSunDir.y, s1 = min((a1 - e) / uSunDir.y, s0 + 90.0);
+      float ds = (s1 - s0) / 48.0, hf;
+      for (int i = 0; i < 48; i++)
+        od += cloudDensity(vec3(xz.x, e, xz.y) + uSunDir * (s0 + ds * (float(i) + 0.5)), false, max(ds * 0.5, uTexKm), hf) * ds;
+    }
+  }
+  outColor = vec4(od, 0.0, 0.0, 1.0);
+}`;
+
 const CLOUD_FS = /* glsl */`
 precision highp float;
 precision highp sampler2D;
@@ -557,6 +591,10 @@ uniform vec3 uCamPos, uSunColor, uSkyAmb, uGroundAmb, uSkyIrr;
 uniform int uTint;           // cloud colour: 0 natural, 1 the satellite product, 2 by altitude
 uniform sampler2D uProd;     // the shown satellite product over the box (web mercator)
 uniform vec4 uProdGeo;       // lon west, lon east, mercator y north, mercator y south
+uniform int uSplit;          // 1: write (in-scattered light, transmittance) for a separate composite (VR)
+uniform int uLightTaps;      // samples toward the sun per cloud sample, growing by uLightGrow
+uniform float uLightGrow;
+uniform vec3 uFov;           // xy projection centre (uv), z: step growth toward the edge of the view
 ${COMMON}
 
 float hg(float mu, float g) { float g2 = g * g; return (1.0 - g2) / (12.5663706 * pow(1.0 + g2 - 2.0 * g * mu, 1.5)); }
@@ -576,11 +614,12 @@ vec3 sunScatter(float od, float mu) {
 float sunOD(vec3 pk, float fp) {
   float od = 0.0, s = 0.0, l = 0.08, hf;
   for (int j = 0; j < 8; j++) {
+    if (j >= uLightTaps) break;
     vec3 q = pk + uSunDir * (s + 0.5 * l);
     if (q.y > uAlt.y) break;
     vec4 b = textureLod(uBlocks, boxUv(q.xz), 0.0);
     if (b.b >= 0.015 && q.y < b.r && q.y > b.g) od += cloudDensity(q, j < 2, max(fp, l * 0.5), hf) * l;
-    s += l; l *= 1.75;
+    s += l; l *= uLightGrow;
   }
   return od;
 }
@@ -677,8 +716,12 @@ void main() {
 
   if (tF > tN) {
     float jit = fract(ign(gl_FragCoord.xy) + uFrame * 0.61803398875);
-    float t = tN + jit * clamp(tN * 0.002, 0.03, 0.4) * uStepScale;
-    int maxS = int(uSteps);
+    // (VR) longer steps toward the edge of the view, where the lens blurs anyway
+    vec2 fq = (vUv - uFov.xy) * 2.0;
+    float fv = 1.0 + uFov.z * min(dot(fq, fq), 2.0);
+    float sts = uStepScale * fv;
+    float t = tN + jit * clamp(tN * 0.002, 0.03, 0.4) * sts;
+    int maxS = int(uSteps / sqrt(fv));
     vec2 bsz = (uBox.zw - uBox.xy) / uBlockN, csz = (uBox.zw - uBox.xy) / uCellN;
     vec2 rxz = mix(rd.xz, vec2(1e-7), vec2(lessThan(abs(rd.xz), vec2(1e-7))));
     bool rainOn = uRainAmt > 0.0;
@@ -717,7 +760,7 @@ void main() {
           else if (be && dyEff > 0.0) jump = min(jump, (env.g - pk.y) / (dyEff * kr));
         }
         // land at a jittered offset past the boundary, so samples never line up across pixels
-        jump = clamp(jump + 0.005 + jit * clamp(t * 0.0018, 0.035, 0.45) * uStepScale, 0.01, tF - t + 1e-3);
+        jump = clamp(jump + 0.005 + jit * clamp(t * 0.0018, 0.035, 0.45) * sts, 0.01, tF - t + 1e-3);
         float tr = exp(-fogOD(pk.y, dyEff, jump * kr));
         L += T * hazeCol * (1.0 - tr);
         T *= tr;
@@ -729,7 +772,7 @@ void main() {
       vec4 fc2 = fld2(uv);
       float rainHere = fc2.r * smoothstep(0.03, 0.8, fc2.a);
       bool nearRain = rainOn && rainHere > 0.02 && pk.y < fc.g + 0.1;
-      float dt = clamp(t * 0.0018, 0.035, 0.45) * uStepScale * (1.0 + 0.6 * max(run, 0.0));
+      float dt = clamp(t * 0.0018, 0.035, 0.45) * sts * (1.0 + 0.6 * max(run, 0.0));
       // past half the step budget, stretch the steps so the ray still gets through the volume:
       // a ray that runs out of steps would show the ground through the cloud
       // (randomised per step and frame, so the long strides do not print slices into the clouds)
@@ -787,6 +830,7 @@ void main() {
       T *= tr;
     }
   }
+  if (uSplit == 1) { outColor = vec4(L, T); return; }
   vec3 bg;
   if (hitT) bg = ter.rgb;
   else if (hitP) {
@@ -838,6 +882,58 @@ void main() {
   }
   float d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
   outColor = vec4(c + d / 255.0, 1.0);
+}`;
+
+// VR eye composite: the ground, sea and sky at (near) the headset's resolution, the clouds and haze
+// (in-scattered light + transmittance, ray-marched at a lower resolution) upsampled over them, so the
+// costly part can run coarse without the whole view turning to blocks
+const VR_FS = /* glsl */`
+precision highp float;
+precision highp sampler2D;
+precision highp sampler3D;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uCloud;    // rgb in-scattered light, a transmittance
+uniform vec2 uTexel;         // 1 / cloud target size
+uniform float uDenoise;
+uniform sampler2D uTerrain;  // rgb lit ground, a distance (0: no ground)
+uniform mat4 uInvProj, uCamWorld;
+uniform vec3 uCamPos, uSunColor, uSkyIrr;
+uniform float uVex, uSunVisible, uExposure;
+${COMMON}
+${DISPLAY_FS.slice(DISPLAY_FS.indexOf('vec3 aces'), DISPLAY_FS.indexOf('vec3 tone'))}
+void main() {
+  vec4 vp = uInvProj * vec4(vUv * 2.0 - 1.0, -1.0, 1.0);
+  vec3 rd = normalize((uCamWorld * vec4(normalize(vp.xyz / vp.w), 0.0)).xyz);
+  vec4 ter = texture(uTerrain, vUv);
+  vec3 bg;
+  if (ter.a > 0.0) bg = ter.rgb;
+  else {
+    vec3 rdr = vec3(rd.x, rd.y / uVex, rd.z);
+    vec3 rdn = rdr / length(rdr);
+    float camAlt = uCamPos.y / uVex;
+    float qa = dot(rd.xz, rd.xz) / (2.0 * R_E);
+    if (rdr.y < 0.0 && rdr.y * rdr.y - 4.0 * qa * camAlt >= 0.0) {
+      float vy = max(-rdn.y, 0.0);
+      vec3 E = uSunColor * uSunVisible * max(uSunDir.y, 0.0) + uSkyIrr;
+      bg = mix(vec3(0.004, 0.012, 0.03) * E / 3.14159265, skyLut(normalize(vec3(rd.x, 0.12 + vy, rd.z))),
+               0.02 + 0.55 * pow(1.0 - vy, 5.0));
+    } else {
+      bg = skyLut(rd);
+      bg += uSunColor * uSunVisible * smoothstep(0.99994, 0.99998, dot(rd, uSunDir)) * 2500.0;
+    }
+  }
+  vec4 c = texture(uCloud, vUv);
+  // the 3x3 average of the interleaved jitter (see DISPLAY_FS)
+  if (uDenoise > 0.0) {
+    vec4 s = c;
+    for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++)
+      if (x != 0 || y != 0) s += texture(uCloud, vUv + vec2(float(x), float(y)) * uTexel);
+    c = mix(c, s / 9.0, uDenoise);
+  }
+  vec3 col = pow(aces((c.rgb + c.a * bg) * uExposure), vec3(1.0 / 2.2));
+  float d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+  outColor = vec4(col + d / 255.0, 1.0);
 }`;
 
 // ------------------------------------------------------------------ icons
@@ -1269,6 +1365,7 @@ class Viewer {
       uSkyAmb: { value: new THREE.Vector3() }, uGroundAmb: { value: new THREE.Vector3() }, uSkyIrr: { value: new THREE.Vector3() },
       uBounce: { value: new THREE.Vector3() },
       uVex: { value: 1 }, uCamPos: { value: new THREE.Vector3() },
+      uShadowMap: { value: this.blankTex }, uShadowOn: { value: 0 },
     };
     this.cloudMat = raw(CLOUD_FS, {
       ...this.U,
@@ -1278,12 +1375,21 @@ class Viewer {
       uHazeBeta: { value: 0.03 }, uHazeH: { value: 1.6 }, uOvercast: { value: 1 }, uRainAmt: { value: 1 },
       uTint: { value: 0 }, uProd: { value: this.blankTex }, uProdGeo: { value: new THREE.Vector4(0, 1, 0, 1) },
       uInvProj: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() },
+      uSplit: { value: 0 }, uLightTaps: { value: 8 }, uLightGrow: { value: 1.75 }, uFov: { value: new THREE.Vector3(0.5, 0.5, 0) },
     });
     this.cloudScene = new THREE.Scene();
     const cm = new THREE.Mesh(quad, this.cloudMat); cm.frustumCulled = false; this.cloudScene.add(cm);
     this.dispMat = raw(DISPLAY_FS, { uSrc: { value: null }, uExposure: { value: 1 }, uTexel: { value: new THREE.Vector2() }, uDenoise: { value: 0 } });
     this.dispScene = new THREE.Scene();
     const dm = new THREE.Mesh(quad, this.dispMat); dm.frustumCulled = false; this.dispScene.add(dm);
+    this.vrMat = raw(VR_FS, {
+      ...this.U,
+      uCloud: { value: null }, uTexel: { value: new THREE.Vector2() }, uDenoise: { value: 1 }, uTerrain: { value: null },
+      uInvProj: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() }, uExposure: { value: 1 },
+    });
+    this.vrScene = new THREE.Scene();
+    const vm = new THREE.Mesh(quad, this.vrMat); vm.frustumCulled = false; this.vrScene.add(vm);
+    this.quad = quad;
 
     this.camera = new THREE.PerspectiveCamera(this.params.fov, 1, 0.01, 20000);
     this.controls = new OrbitControls(this.camera, this.canvas);
@@ -1464,6 +1570,12 @@ class Viewer {
     go.translate((oX0 + oX1) / 2, 0, (oZ0 + oZ1) / 2);
     const outerMesh = new THREE.Mesh(go, terrMat(1, outer, outerTex)); outerMesh.frustumCulled = false;
     S.terrainScene.add(innerMesh, outerMesh);
+    S.shadowMat = new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3, vertexShader: FS_QUAD_VS, fragmentShader: SHADOW_FS, depthTest: false, depthWrite: false,
+      uniforms: { ...U, uElev: { value: S.elevTex }, uGround: { value: new THREE.Vector4(...S.gbox) }, uBaseElev: { value: S.baseElev }, uTexKm: { value: 1 } },
+    });
+    S.shadowScene = new THREE.Scene();
+    const sm = new THREE.Mesh(this.quad, S.shadowMat); sm.frustumCulled = false; S.shadowScene.add(sm);
 
     const cu = this.cloudMat.uniforms;
     cu.uOvercast.value = S.overcast;
@@ -1495,6 +1607,9 @@ class Viewer {
     if (S.elevTex) S.elevTex.dispose();
     if (S.blocks) { S.blocks.tex.dispose(); S.blocks.env.dispose(); }
     if (S.terrainScene) S.terrainScene.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    if (S.shadowMat) S.shadowMat.dispose();
+    if (S.shadowRT) S.shadowRT.dispose();
+    this.U.uShadowMap.value = this.blankTex;
   }
 
   dataTex(u16, w, h, fmt) {
@@ -1660,6 +1775,7 @@ class Viewer {
     cu.uEnv.value = S.blocks.env;
     cu.uCellN.value.set(nx, ny);
     if (Number.isFinite(lo)) this.U.uAlt.value.set(lo, hi);
+    this.blocksVer = (this.blocksVer || 0) + 1;
     this.touch();
   }
 
@@ -1862,6 +1978,16 @@ class Viewer {
       }
     }
     avg = avg.map((v) => v / wsum);
+    this.skyStats = { avg, irr, e, vis };
+    this.applyAmbient();
+    this.syncControls();
+  }
+
+  // ambient terms from the sky LUT's averages and how overcast it is around the camera (no GPU
+  // read-back: called as the camera moves, also every second in VR)
+  applyAmbient() {
+    if (!this.S || !this.skyStats) return;
+    const { avg, irr, e, vis } = this.skyStats;
     const oc = this.S.overcast;
     // under an overcast deck the sky seen from inside / below the clouds is the cloud base
     const grey = (v) => { const l = 0.3 * v[0] + 0.5 * v[1] + 0.2 * v[2]; return v.map((x) => x * oc + l * (1 - oc) * 0.8); };
@@ -1878,7 +2004,6 @@ class Viewer {
       alb * (sc.x * mu * (0.35 + 0.65 * oc) + skyIrr[0]) / Math.PI * 0.5,
       alb * (sc.y * mu * (0.35 + 0.65 * oc) + skyIrr[1]) / Math.PI * 0.5,
       alb * (sc.z * mu * (0.35 + 0.65 * oc) + skyIrr[2]) / Math.PI * 0.5);
-    this.syncControls();
     this.touch();
   }
 
@@ -2166,7 +2291,7 @@ class Viewer {
       S.overcast = oc;
       S.wall = wall;
       this.cloudMat.uniforms.uOvercast.value = oc;
-      this.updateSun();
+      if (force || !this.skyStats) this.updateSun(); else this.applyAmbient();
     }
   }
 
@@ -2274,7 +2399,10 @@ class Viewer {
     }
   }
 
-  renderFrame(terrRT, outRT, prevRT, blend, steps, stepScale, jitter, cam = this.camera) {
+  // vr: { taps, grow, fov, centre: [u, v] } renders the clouds alone (light + transmittance) for
+  // compositeVR, with cheaper lighting, coarser steps toward the edge of the view and the
+  // precomputed ground shadows
+  renderFrame(terrRT, outRT, prevRT, blend, steps, stepScale, jitter, cam = this.camera, vr = null) {
     const r = this.renderer, U = this.U, p = this.params, S = this.S;
     const W = outRT.width, H = outRT.height;
     if (jitter && this.frame > 0) {
@@ -2289,6 +2417,7 @@ class Viewer {
     U.uDensity.value = 2 * p.density;
     U.uCoverage.value = p.coverage;
     U.uDetailAmt.value = p.detail;
+    U.uShadowOn.value = vr && S.shadowRT ? 1 : 0;
     r.setRenderTarget(terrRT);
     r.setClearColor(0x000000, 0);
     r.clear(true, true, false);
@@ -2308,9 +2437,88 @@ class Viewer {
     cu.uTint.value = p.look === 'satellite' && S.prodTex ? 1 : p.preset === 'heights' ? 2 : 0;
     cu.uInvProj.value.copy(cam.projectionMatrixInverse);
     cu.uCamWorld.value.copy(cam.matrixWorld);
+    cu.uSplit.value = vr ? 1 : 0;
+    cu.uLightTaps.value = vr ? vr.taps : 8;
+    cu.uLightGrow.value = vr ? vr.grow : 1.75;
+    if (vr) cu.uFov.value.set(vr.centre[0], vr.centre[1], vr.fov); else cu.uFov.value.set(0.5, 0.5, 0);
     r.setRenderTarget(outRT);
     r.render(this.cloudScene, this.quadCam);
     if (cam.view && cam.view.enabled) cam.clearViewOffset();
+  }
+
+  // one VR eye: clouds (cloudRT, from renderFrame with vr set) over the ground / sea / sky
+  compositeVR(cloudRT, terrRT, cam, target) {
+    const r = this.renderer, u = this.vrMat.uniforms;
+    u.uCloud.value = cloudRT.texture;
+    u.uTexel.value.set(1 / cloudRT.width, 1 / cloudRT.height);
+    u.uTerrain.value = terrRT.texture;
+    u.uInvProj.value.copy(cam.projectionMatrixInverse);
+    u.uCamWorld.value.copy(cam.matrixWorld);
+    u.uExposure.value = this.params.exposure * 0.62;
+    r.setRenderTarget(target);
+    r.render(this.vrScene, this.quadCam);
+  }
+
+  // Cloud shadows on the ground for VR, as a texture over the cloud box. Recomputed when the sun,
+  // the clouds or their settings change, a strip of rows per call so it never stalls a frame
+  // (all at once the first time).
+  updateShadowMap() {
+    const S = this.S, U = this.U, p = this.params;
+    if (!S || !S.shadowMat) return;
+    const r = this.renderer;
+    if (!S.shadowRT) {
+      const N = clamp(Math.max(...S.grid) * 2, 256, 1024);
+      S.shadowRT = new THREE.WebGLRenderTarget(N, N, { type: THREE.HalfFloatType, depthBuffer: false });
+      S.shadowRT.texture.minFilter = S.shadowRT.texture.magFilter = THREE.LinearFilter;
+      S.shadowMat.uniforms.uTexKm.value = (S.box[2] - S.box[0]) / N;
+      U.uShadowMap.value = S.shadowRT.texture;
+    }
+    const sd = U.uSunDir.value;
+    const key = [sd.x, sd.y, sd.z, U.uMix.value, p.density, p.coverage].map((v) => v.toFixed(3)).join()
+      + (U.uField.value && U.uField.value.uuid) + (U.uFieldB.value && U.uFieldB.value.uuid) + this.blocksVer;
+    const rt = S.shadowRT, N = rt.height, strips = 8;
+    if (key !== S.shadowKey) {
+      const first = !S.shadowKey;
+      S.shadowKey = key;
+      S.shadowRow = first ? -1 : 0;
+    }
+    if (S.shadowRow === undefined || S.shadowRow >= strips) return;
+    U.uDensity.value = 2 * p.density;
+    U.uCoverage.value = p.coverage;
+    const rows = Math.ceil(N / strips);
+    const y0 = S.shadowRow < 0 ? 0 : S.shadowRow * rows, h = S.shadowRow < 0 ? N : rows;
+    rt.scissor.set(0, y0, N, h);
+    rt.scissorTest = true;
+    r.setRenderTarget(rt);
+    r.render(S.shadowScene, this.quadCam);
+    rt.scissorTest = false;
+    S.shadowRow = S.shadowRow < 0 ? strips : S.shadowRow + 1;
+  }
+
+  // distance (km) from a world point to the nearest ground or cloud worth seeing in stereo (VR)
+  nearestContent(pw) {
+    const S = this.S, fr = this.shownFields();
+    if (!S) return 1;
+    const vex = this.params.vex, y = pw.y / vex;
+    let d = Math.max(y - this.groundAt(pw.x, pw.z), 0) * 1.5 + 0.03;
+    if (!fr) return d;
+    const b = S.box, [nx, ny] = S.grid;
+    const cx = (b[2] - b[0]) / nx, cz = (b[3] - b[1]) / ny;
+    const R = Math.min(d, 80);
+    const i0 = Math.max(0, Math.floor((pw.x - R - b[0]) / cx)), i1 = Math.min(nx - 1, Math.floor((pw.x + R - b[0]) / cx));
+    const j0 = Math.max(0, Math.floor((pw.z - R - b[1]) / cz)), j1 = Math.min(ny - 1, Math.floor((pw.z + R - b[1]) / cz));
+    const st = Math.max(1, Math.round(Math.max(i1 - i0, j1 - j0) / 48));
+    for (let j = j0; j <= j1; j += st) for (let i = i0; i <= i1; i += st) {
+      const k = (j * nx + i) * 4;
+      if (fromH(fr.f2[k + 3]) < 0.3 || fromH(fr.f1[k + 2]) < 0.015) continue;
+      const top = fromH(fr.f1[k]), base = fromH(fr.f1[k + 1]);
+      const dx = Math.max(Math.abs(b[0] + (i + 0.5) * cx - pw.x) - cx * st / 2, 0);
+      const dz = Math.max(Math.abs(b[1] + (j + 0.5) * cz - pw.z) - cz * st / 2, 0);
+      const dy = y > top ? y - top : y < base ? base - y : 0;
+      const dd = Math.hypot(dx, dy, dz);
+      if (dd < d) d = dd;
+    }
+    return d;
   }
 
   display(rt, target = null, denoise = 0) {
@@ -2346,7 +2554,7 @@ class Viewer {
     if (this.controls) this.controls.dispose();
     for (const k of ['terrRT', 'terrLoRT', 'accA', 'accB', 'loRT', 'skyRT']) if (this[k]) this[k].dispose();
     for (const t of [this.shapeTex, this.detailTex, this.blankTex]) if (t) t.dispose();
-    for (const m of [this.cloudMat, this.dispMat, this.skyMat]) m.dispose();
+    for (const m of [this.cloudMat, this.dispMat, this.skyMat, this.vrMat]) m.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
     this.root.remove();

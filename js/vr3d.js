@@ -18,14 +18,26 @@
  *   trigger                 fly faster (up to 5×)
  *   A / X                   grow (see the area as a model)   B / Y   back toward true size
  *   right stick click       play / pause the loop
+ *   left stick click        3D depth: auto (enhanced stereo) / natural
+ *
+ * Rendering per eye: the ground (with cloud shadows from a precomputed map) at most of the
+ * headset's resolution, the clouds ray-marched at a lower one with cheaper lighting and coarser
+ * steps toward the edge of the lens, then composited (Viewer.compositeVR).
+ *
+ * Stereo: at true size the eyes are 6 cm apart and the clouds kilometres away, so the view has
+ * no depth. In auto mode the eye separation grows with the distance to the nearest ground or
+ * cloud (hyperstereo), so that always looks a few metres away and everything behind it has
+ * depth; close to or inside cloud it eases back to natural.
  */
 const SCALES = [0.001, 0.01, 0.1, 1, 10, 100];
+// auto stereo: the nearest content should look this many eye separations away (~3 m)
+const STEREO_NEAR = 50;
 const DEAD = 0.15;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const dz = (x) => (Math.abs(x) < DEAD ? 0 : (x - Math.sign(x) * DEAD) / (1 - DEAD));
 
 export const VR_HELP = 'Left stick: fly · Right stick ↕: elevation, ↔: turn · Grip + right stick ↕: cloud height · '
-  + 'Trigger: faster · A/X: grow · B/Y: true size · Right stick click: play loop';
+  + 'Trigger: faster · A/X: grow · B/Y: true size · Right stick click: play loop · Left stick click: 3D depth auto / natural';
 
 export class VRMode {
   constructor(viewer, THREE) {
@@ -43,7 +55,13 @@ export class VRMode {
     this.adaptT = 0;
     this.skyT = 0;
     this.terrRT = null;
-    this.outRT = null;
+    this.cloudRT = null;
+    this.depthAuto = true;
+    this.stereo = 1;         // eye separation multiplier (eased toward stereoGoal)
+    this.stereoGoal = 1;
+    this.stereoT = 0;
+    this.camT = 0;
+    this.tmp = new THREE.Vector3();
   }
 
   static async supported() {
@@ -72,6 +90,11 @@ export class VRMode {
     r.xr.setReferenceSpaceType(space);
     await r.xr.setSession(session);
     r.xr.setFoveation(1);
+    // the lowest refresh rate the headset offers from 72 Hz up: the most time per frame
+    const rates = session.supportedFrameRates ? [...session.supportedFrameRates].filter((x) => x >= 72).sort((a, b) => a - b) : [];
+    if (rates.length && session.updateTargetFrameRate) session.updateTargetFrameRate(rates[0]).catch(() => {});
+    this.stereo = this.stereoGoal = 1;
+    this.stereoT = 0;
     if (v.onVR) v.onVR(true);
   }
 
@@ -92,7 +115,7 @@ export class VRMode {
       v.controls.target.copy(cam.position).addScaledVector(f, Math.max(1, alt));
       v.controls.update();
     }
-    for (const k of ['terrRT', 'outRT']) if (this[k]) { this[k].dispose(); this[k] = null; }
+    for (const k of ['terrRT', 'cloudRT']) if (this[k]) { this[k].dispose(); this[k] = null; }
     // three.js restores the canvas size after this handler; resize once it has
     setTimeout(() => { v.resize(); v.touch(); }, 0);
     if (v.onVR) v.onVR(false);
@@ -156,7 +179,10 @@ export class VRMode {
       trig = Math.max(trig, (gp.buttons[0] && gp.buttons[0].value) || 0);
       if (pressed(src, 4)) this.keepHead(() => { this.rig.si = Math.min(SCALES.length - 1, this.rig.si + 1); });
       if (pressed(src, 5)) this.keepHead(() => { this.rig.si = Math.max(0, this.rig.si - 1); });
-      if (pressed(src, 3) && src.handedness !== 'left' && p.framesMode !== 'single') v.togglePlay();
+      if (pressed(src, 3)) {
+        if (src.handedness === 'left') this.depthAuto = !this.depthAuto;
+        else if (p.framesMode !== 'single') v.togglePlay();
+      }
     }
     this.updateHead(cams);
     const h = this.head;
@@ -209,17 +235,36 @@ export class VRMode {
     else if (this.ema < target * 1.08) this.level = Math.min(1, this.level + 0.04);
   }
 
-  ensureTargets(w, h) {
+  ensureTargets(cw, ch, tw, th) {
     const T = this.T;
-    if (this.terrRT && this.terrRT.width === w && this.terrRT.height === h) return;
-    const mk = (type) => {
+    const mk = (k, w, h, type) => {
+      w = Math.max(16, Math.round(w)); h = Math.max(16, Math.round(h));
+      if (this[k] && this[k].width === w && this[k].height === h) return;
+      if (this[k]) this[k].dispose();
       const rt = new T.WebGLRenderTarget(w, h, { type, depthBuffer: type === T.FloatType });
+      // float32 is read 1:1 (it carries the ground distance); the clouds are upsampled smoothly
       rt.texture.minFilter = rt.texture.magFilter = type === T.FloatType ? T.NearestFilter : T.LinearFilter;
-      return rt;
+      this[k] = rt;
     };
-    for (const k of ['terrRT', 'outRT']) if (this[k]) this[k].dispose();
-    this.terrRT = mk(T.FloatType);
-    this.outRT = mk(T.HalfFloatType);
+    mk('terrRT', tw, th, T.FloatType);
+    mk('cloudRT', cw, ch, T.HalfFloatType);
+  }
+
+  /** Eye separation for the depth mode, eased in log space so the depth never jumps. */
+  updateStereo(dt, cams) {
+    this.stereoT -= dt;
+    if (this.stereoT <= 0) {
+      this.stereoT = 0.25;
+      let goal = 1;
+      if (this.depthAuto && cams.length > 1) {
+        const sep = cams[0].position.distanceTo(cams[cams.length - 1].position) * this.scale; // km
+        if (sep > 0) goal = clamp(this.v.nearestContent(this.head.pos) / STEREO_NEAR / sep, 1, 20000);
+      }
+      this.stereoGoal = goal;
+    }
+    // less depth quickly (coming close to cloud), more depth slowly
+    const k = 1 - Math.exp(-dt * (this.stereoGoal < this.stereo ? 4 : 1.5));
+    this.stereo = Math.exp(Math.log(this.stereo) + (Math.log(this.stereoGoal) - Math.log(this.stereo)) * k);
   }
 
   // ---------------------------------------------------------------- frame
@@ -231,28 +276,42 @@ export class VRMode {
     if (this.align) { this.alignTo(cams); this.align = false; }
     this.input(dt, cams);
     this.adapt(dt);
-    const base = { draft: 0.34, standard: 0.45, high: 0.58 }[v.params.quality] || 0.45;
-    const res = 0.16 + (base - 0.16) * this.level;
-    const steps = Math.round(56 + ({ draft: 100, standard: 150, high: 190 }[v.params.quality] - 56) * this.level);
-    const vp0 = cams[0].viewport;
-    this.ensureTargets(Math.max(16, Math.round(vp0.z * res)), Math.max(16, Math.round(vp0.w * res)));
-    const saved = target.viewport.clone();
-    const alt = Math.max(0.0005, this.altitude(this.head.pos));
-    for (let i = 0; i < cams.length; i++) this.renderEye(cams[i], this.eyes[i % 2], target, alt, steps);
-    target.viewport.copy(saved);
-    r.setRenderTarget(target);
+    this.drawEyes(cams, target, dt);
     // the desktop camera follows the head: the map shows where you are and what you see
     v.camera.position.copy(this.head.pos);
     v.camera.quaternion.copy(this.head.quat);
     v.camera.updateMatrixWorld();
-    v.emitCamera(false);
+    this.camT += dt;
+    if (this.camT > 0.5) { this.camT = 0; v.emitCamera(true); }
     this.skyT += dt;
     if (this.skyT > 1) { this.skyT = 0; v.updateLocalSky(false); }
   }
 
+  /** Render each eye of cams (XR views: position, quaternion, projectionMatrix, viewport) into target. */
+  drawEyes(cams, target, dt) {
+    const v = this.v, q = v.params.quality, L = this.level;
+    // the clouds are soft and can run coarse; the ground and sky stay close to the headset's resolution
+    const base = { draft: 0.34, standard: 0.45, high: 0.58 }[q] || 0.45;
+    const cres = 0.22 + (base - 0.22) * L;
+    const tres = ({ draft: 0.6, standard: 0.8, high: 1 }[q] || 0.8) * (0.7 + 0.3 * L);
+    const steps = Math.round(56 + (({ draft: 100, standard: 150, high: 190 }[q] || 150) - 56) * L);
+    const vp0 = cams[0].viewport;
+    this.ensureTargets(vp0.z * cres, vp0.w * cres, vp0.z * tres, vp0.w * tres);
+    this.updateHead(cams);
+    this.updateStereo(dt, cams);
+    v.updateShadowMap();
+    const saved = target.viewport.clone();
+    const alt = Math.max(0.0005, this.altitude(this.head.pos));
+    for (let i = 0; i < cams.length; i++) this.renderEye(cams[i], this.eyes[i % 2], target, alt, steps);
+    target.viewport.copy(saved);
+    v.renderer.setRenderTarget(target);
+  }
+
   renderEye(xc, e, target, alt, steps) {
     const v = this.v;
-    this.toWorld(xc.position, e.position);
+    // the eye's offset from the middle of the head, times the stereo multiplier
+    this.tmp.copy(xc.position).sub(this.head.local).multiplyScalar(this.stereo).add(this.head.local);
+    this.toWorld(this.tmp, e.position);
     e.quaternion.multiplyQuaternions(this.qYaw, xc.quaternion);
     e.updateMatrixWorld(true);
     // the eye's (asymmetric) frustum with near / far in km
@@ -264,9 +323,11 @@ export class VRMode {
     e.aspect = (R - L) / (U - B);
     e.projectionMatrix.makePerspective(L * near, R * near, U * near, B * near, near, far);
     e.projectionMatrixInverse.copy(e.projectionMatrix).invert();
-    v.renderFrame(this.terrRT, this.outRT, null, 1, steps, 1.8, false, e);
+    // where the eye looks straight ahead (uv): steps grow from there toward the edge of the lens
+    const centre = [0.5 - m[8] / 2, 0.5 - m[9] / 2];
+    v.renderFrame(this.terrRT, this.cloudRT, null, 1, steps, 1.8, false, e, { taps: 5, grow: 2.9, fov: 0.8, centre });
     const vp = xc.viewport;
     target.viewport.set(vp.x, vp.y, vp.z, vp.w);
-    v.display(this.outRT, target, 1);
+    v.compositeVR(this.cloudRT, this.terrRT, e, target);
   }
 }
