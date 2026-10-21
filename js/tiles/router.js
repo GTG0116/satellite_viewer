@@ -1,13 +1,20 @@
 /* Main-thread side of the tile workers: frames are handed to one worker each (transferred, not
- * copied) and MapLibre's satv:// / satdem:// tile requests are routed to the owner. */
+ * copied) and MapLibre's satv:// / satdem:// tile requests are routed to the owner.
+ *
+ * Frames on the same grid (every frame of a loop over a fixed sector) share a worker: its
+ * tile -> pixel index and city-light caches then serve the whole loop, instead of each worker
+ * navigating and resampling the same tiles for its share of the frames. */
+import { gridKey } from '../geo.js';
 
 export class TileRouter {
   constructor(n, { cacheMB = 0 } = {}) {
     this.workers = [];
     this.pending = new Map();
     this.owner = new Map(); // frame id -> worker
+    this.gridOwner = new Map(); // grid key -> worker
+    this.load = new Map(); // worker -> frames held
     this.luts = new Set();
-    this.seq = 0; this.rr = 0;
+    this.seq = 0;
     for (let i = 0; i < n; i++) {
       const w = new Worker(new URL('./tileworker.js', import.meta.url), { type: 'module' });
       w.onmessage = (e) => {
@@ -16,8 +23,21 @@ export class TileRouter {
         if (p) (ok ? p.resolve(result) : p.reject(new Error(error)));
       };
       this.workers.push(w);
-      if (cacheMB) this._call(w, 'config', { cacheMB: cacheMB / n });
+      this.load.set(w, 0);
+      if (cacheMB) this._call(w, 'config', { cacheMB });
     }
+  }
+
+  _workerFor(grid) {
+    const k = gridKey(grid);
+    let w = this.gridOwner.get(k);
+    if (!w || !this.load.get(w)) {
+      // a new grid goes to the least busy worker
+      w = this.workers.reduce((a, b) => (this.load.get(b) < this.load.get(a) ? b : a));
+      this.gridOwner.set(k, w);
+      if (this.gridOwner.size > 64) this.gridOwner.delete(this.gridOwner.keys().next().value);
+    }
+    return w;
   }
 
   _call(w, type, args, transfer = []) {
@@ -27,8 +47,9 @@ export class TileRouter {
 
   /** Hand a frame to a worker. The frame's big arrays move there (the frame keeps its metadata). */
   put(frame) {
-    const w = this.workers[this.rr++ % this.workers.length];
+    const w = this._workerFor(frame.grid);
     this.owner.set(frame.id, w);
+    this.load.set(w, this.load.get(w) + 1);
     const f = { mode: frame.mode, w: frame.w, h: frame.h, grid: frame.grid, rgba: frame.rgba || null,
       ref: { codes: frame.ref.codes, w: frame.ref.w, h: frame.ref.h, grid: frame.ref.grid, kind: frame.ref.kind, band: frame.ref.band },
       lights: frame.product === 'geocolor' };
@@ -41,7 +62,12 @@ export class TileRouter {
 
   drop(ids) {
     const by = new Map();
-    for (const id of ids) { const w = this.owner.get(id); if (!w) continue; this.owner.delete(id); (by.get(w) || by.set(w, []).get(w)).push(id); }
+    for (const id of ids) {
+      const w = this.owner.get(id);
+      if (!w) continue;
+      this.owner.delete(id); this.load.set(w, this.load.get(w) - 1);
+      (by.get(w) || by.set(w, []).get(w)).push(id);
+    }
     for (const [w, list] of by) this._call(w, 'drop', { ids: list });
   }
 

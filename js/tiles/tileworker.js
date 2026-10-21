@@ -130,16 +130,27 @@ function heightKm(f) {
   };
 }
 
-// Black Marble city lights (NASA GIBS, 256 px tiles up to z8) under GeoColor's night side
+// Black Marble city lights (NASA GIBS, 256 px tiles up to z8) under GeoColor's night side.
+// GIBS sends them with no-store, so without our own cache every visit downloads them again
+// (each night-side tile waits for its lights); the 2016 composite never changes.
+const LIGHTS_CACHE = 'satview-lights-v1';
+async function lightPng(url) {
+  let c = null;
+  try { c = await caches.open(LIGHTS_CACHE); const hit = await c.match(url); if (hit) return hit.blob(); } catch (e) { /* no Cache Storage */ }
+  const r = await fetch(url);
+  if (!r.ok) return null;
+  if (c) c.put(url, r.clone()).catch(() => {});
+  return r.blob();
+}
 const lightTiles = new Map();
 function lightTile(z, x, y) {
   const k = `${z}/${x}/${y}`;
   if (!lightTiles.has(k)) {
     lightTiles.set(k, (async () => {
       try {
-        const r = await fetch(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/${z}/${y}/${x}.png`);
-        if (!r.ok) return null;
-        const bmp = await createImageBitmap(await r.blob());
+        const png = await lightPng(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/${z}/${y}/${x}.png`);
+        if (!png) return null;
+        const bmp = await createImageBitmap(png);
         const c = new OffscreenCanvas(256, 256), g = c.getContext('2d'); g.drawImage(bmp, 0, 0);
         return g.getImageData(0, 0, 256, 256).data;
       } catch (e) { return null; }
@@ -148,29 +159,65 @@ function lightTile(z, x, y) {
   }
   return lightTiles.get(k);
 }
-async function addLightsMasked(out, inside, z, x, y, size) {
+// The lights resampled to one output tile (RGBA, A = 255 where a light tile exists): built once
+// per tile position and reused by every loop frame. Bounded by bytes.
+const tileLightCache = new Map(); // z/x/y/size -> Promise<Uint8Array>
+let tileLightBytes = 0, tileLightMax = 16e6;
+function tileLights(z, x, y, size) {
+  const k = `${z}/${x}/${y}/${size}`;
+  let p = tileLightCache.get(k);
+  if (p) { tileLightCache.delete(k); tileLightCache.set(k, p); return p; }
+  p = buildTileLights(z, x, y, size);
+  tileLightCache.set(k, p);
+  tileLightBytes += size * size * 4;
+  for (const [ok] of tileLightCache) {
+    if (tileLightBytes <= tileLightMax || tileLightCache.size <= 1) break;
+    tileLightCache.delete(ok);
+    const s = Number(ok.slice(ok.lastIndexOf('/') + 1));
+    tileLightBytes -= s * s * 4;
+  }
+  return p;
+}
+
+async function buildTileLights(z, x, y, size) {
   const zl = Math.min(8, z + Math.round(Math.log2(size / 256)));
   const sc = 2 ** zl / 2 ** z * 256 / size; // light px per output px
-  const n = 2 ** zl, tiles = new Map();
+  const n = 2 ** zl;
   const gx0 = x * size * sc, gy0 = y * size * sc;
-  for (let ty = Math.floor(gy0 / 256); ty <= Math.floor((gy0 + size * sc - 1e-6) / 256); ty++) {
-    for (let tx = Math.floor(gx0 / 256); tx <= Math.floor((gx0 + size * sc - 1e-6) / 256); tx++) {
-      if (ty >= 0 && ty < n) tiles.set(`${tx},${ty}`, await lightTile(zl, ((tx % n) + n) % n, ty));
+  const tx0 = Math.floor(gx0 / 256), tx1 = Math.floor((gx0 + size * sc - 1e-6) / 256);
+  const ty0 = Math.floor(gy0 / 256), ty1 = Math.floor((gy0 + size * sc - 1e-6) / 256);
+  const ntx = tx1 - tx0 + 1, src = [];
+  for (let ty = ty0; ty <= ty1; ty++) {
+    for (let tx = tx0; tx <= tx1; tx++) src.push(ty >= 0 && ty < n ? lightTile(zl, ((tx % n) + n) % n, ty) : null);
+  }
+  const tiles = await Promise.all(src);
+  const colT = new Int32Array(size), colK = new Int32Array(size);
+  for (let px = 0; px < size; px++) {
+    const gx = Math.floor(gx0 + (px + 0.5) * sc), tx = Math.floor(gx / 256);
+    colT[px] = tx - tx0; colK[px] = (gx - tx * 256) * 4;
+  }
+  const out = new Uint8Array(size * size * 4);
+  for (let py = 0; py < size; py++) {
+    const gy = Math.floor(gy0 + (py + 0.5) * sc), ty = Math.floor(gy / 256), row = (ty - ty0) * ntx, ly = (gy - ty * 256) * 1024;
+    for (let px = 0, o = py * size * 4; px < size; px++, o += 4) {
+      const L = tiles[row + colT[px]];
+      if (!L) continue;
+      const k = ly + colK[px];
+      out[o] = L[k]; out[o + 1] = L[k + 1]; out[o + 2] = L[k + 2]; out[o + 3] = 255;
     }
   }
-  for (let py = 0; py < size; py++) {
-    const gy = Math.floor(gy0 + (py + 0.5) * sc), ty = Math.floor(gy / 256), ly = gy - ty * 256;
-    for (let px = 0; px < size; px++) {
-      const o = (py * size + px) * 4, a = out[o + 3];
-      if (a === 255 || !inside[py * size + px]) continue;
-      const gx = Math.floor(gx0 + (px + 0.5) * sc), tx = Math.floor(gx / 256), lx = gx - tx * 256;
-      const L = tiles.get(`${tx},${ty}`);
-      if (!L) continue;
-      const k = (ly * 256 + lx) * 4, t = a / 255, u = 1 - t;
-      // night lights glow warm; the imagery keeps its own alpha-weighted colour on top
-      out[o] = out[o] * t + L[k] * u; out[o + 1] = out[o + 1] * t + L[k + 1] * 0.9 * u; out[o + 2] = out[o + 2] * t + L[k + 2] * 0.7 * u;
-      out[o + 3] = 255;
-    }
+  return out;
+}
+
+async function addLightsMasked(out, idx, z, x, y, size) {
+  const L = await tileLights(z, x, y, size);
+  for (let i = 0, o = 0; i < idx.length; i++, o += 4) {
+    const a = out[o + 3];
+    if (a === 255 || idx[i] < 0 || !L[o + 3]) continue;
+    const t = a / 255, u = 1 - t;
+    // night lights glow warm; the imagery keeps its own alpha-weighted colour on top
+    out[o] = out[o] * t + L[o] * u; out[o + 1] = out[o + 1] * t + L[o + 1] * 0.9 * u; out[o + 2] = out[o + 2] * t + L[o + 2] * 0.7 * u;
+    out[o + 3] = 255;
   }
 }
 
@@ -198,7 +245,7 @@ async function groundTile(z, x, y) {
 }
 
 const TASKS = {
-  config({ cacheMB }) { if (cacheMB) indexMax = cacheMB * 1e6; return { result: true }; },
+  config({ cacheMB }) { if (cacheMB) { indexMax = cacheMB * 1e6; tileLightMax = cacheMB * 0.5e6; } return { result: true }; },
   put({ id, frame }) { frames.set(id, frame); return { result: true }; },
   drop({ ids }) { for (const id of ids) frames.delete(id); return { result: true }; },
   lut({ id, lut, kind, vmin, vmax }) { tables.set(id, codeTable(lut, kind, vmin, vmax)); if (tables.size > 24) tables.delete(tables.keys().next().value); return { result: true }; },
@@ -216,11 +263,8 @@ const TASKS = {
         } else {
           const s32 = new Uint32Array(f.rgba.buffer, f.rgba.byteOffset, f.w * f.h);
           for (let i = 0; i < idx.length; i++) { const k = idx[i]; if (k >= 0) o32[i] = s32[k]; }
-          if (lights && f.lights) {
-            // only pixels inside the image get lights (GeoColor's own night alpha decides how much)
-            const inside = new Uint8Array(idx.length); for (let i = 0; i < idx.length; i++) inside[i] = idx[i] >= 0;
-            await addLightsMasked(out, inside, z, x, y, size);
-          }
+          // only pixels inside the image get lights (GeoColor's own night alpha decides how much)
+          if (lights && f.lights) await addLightsMasked(out, idx, z, x, y, size);
         }
       }
     }

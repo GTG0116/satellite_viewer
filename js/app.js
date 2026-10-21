@@ -1,20 +1,18 @@
 /* Satellite Viewer (static web edition): UI, state, loading and playback on a MapLibre map. */
-import { SATS, products, RGBS, CMAPS, buildLut, lutCss, rangeFor, SECTOR_NOTES, bandsOf, rolesOf, bandLabel } from './catalog.js';
+import { SATS, products, CMAPS, buildLut, lutCss, rangeFor, SECTOR_NOTES, bandsOf, rolesOf, bandLabel } from './catalog.js';
 import { plan, scansFor, loadFrame, loadBands, estimateBytes, frameKey } from './scenes.js';
 import { SatMap, unwrapLine } from './map.js';
-import { Pool } from './pool.js';
-import { probeDevice, autoTier, makeTier, minTier, lowerTier, FrameWatch } from './perf.js';
+import { autoTier, makeTier, lowerTier, FrameWatch } from './perf.js';
 import { outline, gridCenter, resKm, lonlatToRC } from './geo.js';
 import { setProxy, availableScans } from './listing.js';
 import { Volume } from './volume.js';
+// settings, device tier, decode workers and the first frame's download started before the map loaded
+import { SETTINGS_KEY, device, tier, S, readHash, budget, currentPlan, pool, takeEarly } from './boot.js';
 
 const $ = (id) => document.getElementById(id);
-const SETTINGS_KEY = 'satview.web.v2';
 const REFRESH_MS = 60e3;
 
 // ------------------------------------------------------------------ settings
-function loadSaved() { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch (e) { return {}; } }
-const saved = loadSaved();
 let saveT = 0, hashT = 0, lastHash = '';
 function save() {
   clearTimeout(saveT);
@@ -23,21 +21,7 @@ function save() {
   }, 400);
 }
 
-const device = probeDevice();
-// Auto quality: the device's tier, capped lower if this browser already ran out of speed or memory
-const tierName = saved.quality && saved.quality !== 'auto' ? saved.quality : minTier(autoTier(device), saved.autoCap || 'high');
-const tier = makeTier(tierName, device);
 document.body.classList.add(`tier-${tier.name}`);
-
-const S = Object.assign({
-  sat: 'goes19', sector: 'conus', product: 'geocolor', cmaps: {}, opacity: 1, nFrames: tier.defFrames, speed: 220,
-  blend: false, blendMs: 300, threeD: false, exag: 10, terrain: false, terrainExag: 1.5, borders: true, states: true, grat: true,
-  outline: true, night: true, lights: true, labels: true, globe: true, theme: 'dark', quality: 'auto', resolution: 'cmip',
-  bbox: null, fps: false, archive: null, cam: null,
-}, saved);
-S.nFrames = Math.min(S.nFrames || tier.defFrames, tier.maxFrames);
-if (!SATS[S.sat]) S.sat = 'goes19';
-readHash();
 
 // ------------------------------------------------------------------ core objects
 const cfg = globalThis.SATVIEW_CONFIG || {};
@@ -49,7 +33,6 @@ if (!device.gl2) {
 const sm = new SatMap($('map'), { tier, theme: S.theme, globe: S.globe, labels: S.labels, camera: S.cam,
   onMove: () => { save(); hashSoon(); } });
 const map = sm.map;
-const pool = new Pool(tier.workers);
 let frameSeq = 0;
 
 // ------------------------------------------------------------------ helpers
@@ -86,13 +69,6 @@ const loading = new Map();     // frame key -> promise
 let cur = { plan: null, scans: [], idx: 0, token: 0, ac: null, fitted: '' };
 let shown = null;              // frame on screen
 
-function budget(rgb) {
-  const bpp = rgb ? 6 : 2; // RGBA + 16-bit reference band, or just the band
-  return { maxTex: tier.maxTex, framePx: Math.min(tier.framePx, (tier.memMB * 1e6 * 0.85) / (Math.max(1, S.nFrames) * bpp)) };
-}
-function currentPlan() {
-  return plan({ sat: S.sat, sector: S.sector, product: S.product, resolution: S.resolution, bbox: S.bbox }, budget(!!RGBS[S.product]));
-}
 const memUsed = () => { let s = 0; for (const f of cache.values()) s += f.memBytes || 0; return s; };
 
 function evict() {
@@ -106,11 +82,11 @@ function evict() {
   if (drop.length) sm.dropFrames(drop);
 }
 
-function getFrame(p, scan, pri) {
+function getFrame(p, scan, pri, early = null) {
   const key = frameKey(p, scan);
   if (cache.has(key)) return Promise.resolve(cache.get(key));
   if (loading.has(key)) return loading.get(key);
-  const pr = loadFrame(p, scan, pool, { pri, signal: cur.ac?.signal }).then(async (f) => {
+  const pr = (early || loadFrame(p, scan, pool, { pri, signal: cur.ac?.signal })).then(async (f) => {
     f.id = ++frameSeq;
     await sm.putFrame(f);
     loading.delete(key);
@@ -164,7 +140,7 @@ async function reload({ fit = false } = {}) {
   status(`Loading ${prodInfo().name} · ≈${fmtMB(est)}`);
   const t0 = performance.now();
   try {
-    const f = await getFrame(p, scans[last], 0);
+    const f = await getFrame(p, scans[last], 0, (await takeEarly(frameKey(p, scans[last])))?.frame);
     if (token !== cur.token) return;
     await show(last, { blend: false });
     if (fit || cur.fitted !== `${S.sat}|${S.sector}|${S.bbox}`) { fitTo(f); cur.fitted = `${S.sat}|${S.sector}|${S.bbox}`; }
@@ -295,12 +271,15 @@ function startPlay() {
     const t0 = performance.now();
     await show(next, { blend: pos !== L.length - 1 });   // waits until the frame's tiles are on screen
     if (!playing) return;
+    // the frame after it loads its tiles while this one is on screen
+    const L2 = loadedIdx();
+    sm.prefetch(frameAt(L2[(L2.indexOf(next) + 1) % L2.length]));
     const dwell = next === L[L.length - 1] ? S.speed * 4 : S.speed;
     playT = setTimeout(tick, Math.max(0, dwell - (performance.now() - t0)));
   };
   tick();
 }
-function stopPlay() { playing = false; clearTimeout(playT); setPlayIcon(); }
+function stopPlay() { playing = false; clearTimeout(playT); setPlayIcon(); sm.cancelPrefetch(); }
 function setPlayIcon() {
   $('playIcon').innerHTML = playing ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor"/>' : '<path d="M8 5.5v13l11-6.5z" fill="currentColor"/>';
   $('playBtn').setAttribute('aria-label', playing ? 'Pause loop' : 'Play loop');
@@ -345,9 +324,22 @@ function updateLegend(f) {
   const [vmin, vmax] = rangeFor(S.sat, f.ref.band, cm), pct = f.ref.kind === 'refl';
   $('legendTitle').textContent = `${pi.name} · ${pi.label}`;
   $('legendBar').style.background = lutCss(cm, vmin, vmax);
-  const ticks = [];
-  for (let i = 0; i <= 4; i++) { const v = vmin + (vmax - vmin) * i / 4; ticks.push(pct ? `${Math.round(v * 100)}%` : `${Math.round(v)}${i === 4 ? ' K' : ''}`); }
-  $('legendTicks').innerHTML = ticks.map((t) => `<span>${t}</span>`).join('');
+  const el = $('legendTicks');
+  el.classList.toggle('abs', !pct);
+  if (pct) {
+    const ticks = [];
+    for (let i = 0; i <= 4; i++) ticks.push(`${Math.round((vmin + (vmax - vmin) * i / 4) * 100)}%`);
+    el.innerHTML = ticks.map((t) => `<span>${t}</span>`).join('');
+  } else {
+    // brightness temperatures in °C, at round values (a label's anchor slides from its left
+    // edge at the bar's start to its right edge at the end, so none overflow the legend)
+    const lo = vmin - 273.15, hi = vmax - 273.15, step = hi - lo > 100 ? 30 : hi - lo > 50 ? 20 : 10, out = [];
+    for (let c = Math.ceil(lo / step) * step; c <= hi + 1e-9; c += step) {
+      const p = ((c - lo) / (hi - lo)) * 100;
+      out.push(`<span style="left:${p.toFixed(1)}%;transform:translateX(-${p.toFixed(1)}%)">${c}${c + step > hi ? ' °C' : ''}</span>`);
+    }
+    el.innerHTML = out.join('');
+  }
   lg.classList.remove('hidden');
 }
 
@@ -513,15 +505,17 @@ function buildSectors() {
   $('customTools').classList.toggle('hidden', S.sector !== 'custom');
   $('bboxText').textContent = S.bbox ? S.bbox.map((v) => v.toFixed(1)).join(', ') : 'no box yet';
 }
-let groupFilter = 'all', estimates = {};
+let estimates = {};
 function buildProducts() {
   const list = prodList();
   const groups = ['all', ...new Set(list.map((p) => p.group))];
+  // the saved filter, unless this satellite has no such group
+  const groupFilter = groups.includes(S.group) ? S.group : 'all';
   const ge = $('prodGroups'); ge.innerHTML = '';
   for (const g of groups) {
     const b = document.createElement('button');
     b.textContent = g === 'all' ? 'All' : g; b.className = g === groupFilter ? 'on' : '';
-    b.onclick = () => { groupFilter = g; buildProducts(); };
+    b.onclick = () => { S.group = g; save(); buildProducts(); };
     ge.appendChild(b);
   }
   const q = $('prodSearch').value.trim().toLowerCase();
@@ -628,12 +622,14 @@ function arcLoad(dir = 0) {
 function togglePanel(open) {
   const p = $('panel'), desktop = !isNarrow();
   if (open === undefined) open = desktop ? p.classList.contains('collapsed') : !p.classList.contains('open');
-  if (desktop) { p.classList.toggle('collapsed', !open); document.body.classList.toggle('panel-collapsed', !open); }
+  if (desktop) { p.classList.toggle('collapsed', !open); document.body.classList.toggle('panel-collapsed', !open); S.panelCollapsed = !open; save(); }
   else { p.classList.toggle('open', open); document.body.classList.toggle('panel-open', open); }
   $('btnPanel').setAttribute('aria-expanded', String(open));
   $('btnPanel').classList.toggle('on', open);
 }
 function selectTab(t) {
+  if (!document.querySelector(`.tabs button[data-tab="${t}"]`)) t = 'data';
+  S.tab = t; save();
   for (const b of document.querySelectorAll('.tabs button')) b.classList.toggle('on', b.dataset.tab === t);
   for (const s of document.querySelectorAll('.panel-body section')) s.classList.toggle('on', s.dataset.tab === t);
 }
@@ -699,17 +695,6 @@ function writeHash() {
   if (S.archive) { h.set('end', S.archive.end.slice(0, 16)); h.set('span', S.archive.hours); }
   lastHash = h.toString();
   history.replaceState(null, '', `#${lastHash}`);
-}
-function readHash() {
-  if (!location.hash) return;
-  const h = new URLSearchParams(location.hash.slice(1));
-  if (h.get('sat') && SATS[h.get('sat')]) S.sat = h.get('sat');
-  if (h.get('sec')) S.sector = h.get('sec');
-  if (h.get('p')) S.product = h.get('p');
-  if (h.get('bbox')) S.bbox = h.get('bbox').split(',').map(Number);
-  if (h.get('cam')) { const [lon, lat, zoom, bearing, pitch] = h.get('cam').split(',').map(Number); if (zoom < 23) S.cam = { center: [lon, lat], zoom, bearing: bearing || 0, pitch: pitch || 0 }; }
-  if (h.get('end')) S.archive = { end: new Date(`${h.get('end')}:00Z`).toISOString(), hours: +(h.get('span') || 3) };
-  if (!SATS[S.sat].sectors.some((s) => s[0] === S.sector)) S.sector = SATS[S.sat].kind === 'goes' ? SATS[S.sat].local : 'full';
 }
 
 // ------------------------------------------------------------------ bind UI
@@ -817,8 +802,9 @@ layoutVars();
 // ------------------------------------------------------------------ boot
 bind();
 buildSats(); buildSectors(); buildProducts(); buildCmaps(); buildFrames(); syncArchive();
+selectTab(S.tab);
+if (S.panelCollapsed && !isNarrow()) togglePanel(false);
 perfInfo();
-if (S.sector === 'custom' && !S.bbox) S.sector = SATS[S.sat].kind === 'goes' ? SATS[S.sat].local : 'full';
 if (S.cam) cur.fitted = `${S.sat}|${S.sector}|${S.bbox}`;
 sm.ready.then(() => {
   sm.show(['coast', 'boundary-country'], S.borders); sm.show('boundary-state', S.states); sm.show('graticule', S.grat); sm.show('night', S.night);

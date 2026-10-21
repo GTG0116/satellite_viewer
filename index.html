@@ -8,10 +8,24 @@
 <title>Satellite Viewer</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
+<!-- config first (a script after a pending stylesheet would wait for it); boot.js runs as soon as
+     its small graph is in, before MapLibre: decode workers + the first frame's download -->
+<script src="config.js"></script>
+<script type="module" async src="js/boot.js"></script>
 <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css">
 <link rel="stylesheet" href="css/app.css">
+<!-- the whole module graph in one round trip instead of one per import level -->
+<link rel="modulepreload" href="js/boot.js">
+<link rel="modulepreload" href="js/catalog.js">
+<link rel="modulepreload" href="js/scenes.js">
+<link rel="modulepreload" href="js/listing.js">
+<link rel="modulepreload" href="js/geo.js">
+<link rel="modulepreload" href="js/pool.js">
+<link rel="modulepreload" href="js/perf.js">
 <link rel="modulepreload" href="js/app.js">
 <link rel="modulepreload" href="js/map.js">
+<link rel="modulepreload" href="js/volume.js">
+<link rel="modulepreload" href="js/tiles/router.js">
 <link rel="modulepreload" href="vendor/maplibre/maplibre-gl.mjs">
 <link rel="modulepreload" href="vendor/maplibre/maplibre-gl-shared.mjs">
 <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
@@ -19,7 +33,6 @@
 <link rel="dns-prefetch" href="https://noaa-himawari9.s3.amazonaws.com">
 <link rel="dns-prefetch" href="https://noaa-gk2a-pds.s3.amazonaws.com">
 <link rel="preconnect" href="https://gibs.earthdata.nasa.gov" crossorigin>
-<script src="config.js"></script>
 </head>
 <body>
 <div id="map" aria-label="Satellite map"></div>

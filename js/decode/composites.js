@@ -75,16 +75,21 @@ function lattice(grid, w, h, time, STEP = 8) {
     q[k + Q_INVMUS] = 1 / Math.max(0.1, Math.min(1, mu));
     q[k + Q_WDS] = clamp01((88 - sza) / 10);
   }
-  // per output row: the lattice interpolated vertically, then horizontally on demand
+  // per output row: the lattice interpolated vertically, then horizontally (column weights are
+  // the same for every row)
   const rowBuf = new Float32Array(gw * NQ);
   const out = new Float32Array(w * NQ);
+  const ca = new Int32Array(w), cb = new Int32Array(w), ctx = new Float64Array(w);
+  for (let c = 0; c < w; c++) {
+    const fx = c / STEP, x0 = Math.min(gw - 1, fx | 0);
+    ca[c] = x0 * NQ; cb[c] = Math.min(gw - 1, x0 + 1) * NQ; ctx[c] = fx - x0;
+  }
   return {
     row(r) {
       const fy = r / STEP, y0 = Math.min(gh - 1, fy | 0), y1 = Math.min(gh - 1, y0 + 1), ty = fy - y0;
       for (let i = 0; i < gw * NQ; i++) rowBuf[i] = q[y0 * gw * NQ + i] * (1 - ty) + q[y1 * gw * NQ + i] * ty;
-      for (let c = 0; c < w; c++) {
-        const fx = c / STEP, x0 = Math.min(gw - 1, fx | 0), x1 = Math.min(gw - 1, x0 + 1), tx = fx - x0;
-        const a = x0 * NQ, b = x1 * NQ, d0 = c * NQ;
+      for (let c = 0, d0 = 0; c < w; c++, d0 += NQ) {
+        const a = ca[c], b = cb[c], tx = ctx[c];
         for (let k = 0; k < NQ; k++) out[d0 + k] = rowBuf[a + k] * (1 - tx) + rowBuf[b + k] * tx;
       }
       return out;
@@ -151,6 +156,12 @@ const RECIPES = {
   geocolor(I) {
     const t = trueColorFn(I), p08 = powT(0.8);
     return (x, q, k, o) => {
+      const wd = q[k + Q_WD];
+      if (wd >= 1) { // full day: the night layer has no weight
+        const c = t(x, q, k);
+        o[0] = tone(c[0]); o[1] = tone(c[1]); o[2] = tone(c[2]); o[3] = 1;
+        return;
+      }
       const bt = x[I.ir103];
       // night: IR clouds + low cloud / fog from 10.3 - 3.9 um
       const w = pw(p08, (282 - bt) / 72);
@@ -159,7 +170,6 @@ const RECIPES = {
       const hiS = 0.42 + 0.58 * w;
       const nr = hiS * 0.96 * mix + 0.62 * (1 - mix), ng = hiS * 0.97 * mix + 0.70 * (1 - mix), nb = hiS * mix + 0.86 * (1 - mix);
       const na = clamp01(Math.max(w, lc * 0.85));
-      const wd = q[k + Q_WD];
       let dr = 0, dg = 0, db = 0;
       if (wd > 0) { const c = t(x, q, k); dr = tone(c[0]); dg = tone(c[1]); db = tone(c[2]); }
       const kk = (1 - wd) * na, fa = wd + kk, den = fa > 1e-6 ? fa : 1e-6;

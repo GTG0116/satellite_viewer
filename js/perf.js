@@ -1,15 +1,26 @@
-/* Device tiers: every budget that keeps the viewer smooth on a given device. */
+/* Device tiers: every budget that keeps the viewer smooth on a given device.
+ *
+ * memMB holds the decoded loop (RGB composites take 6 bytes a pixel, single bands 2) and is
+ * sized so that each tier's default view runs at the sector's full resolution:
+ *   low     phones, low-end laptops   CONUS GeoColor at 2 km, 6 frames      (6 x 22.5 MB)
+ *   medium  high-end phones, laptops  CONUS GeoColor at 2 km, 10 frames;    full disk at 4 km
+ *   high    desktops, gaming laptops  24-frame full-disk loops at 4 km; native 2 km full disk
+ *                                     and 1 km CONUS for loops of up to ~6 / ~8 frames
+ * maxTex caps a frame's width / height. Frames are never GPU textures (tiles are cut from them),
+ * so it does not depend on the GPU. dprCap / mobileDpr: map pixel ratio on desktops / phones
+ * (vector lines and labels; imagery tiles are pixel-exact either way).
+ */
 
 const BASE = {
-  low: { name: 'low', label: 'Low', maxTex: 2048, memMB: 96, framePx: 1.6e6, dprCap: 1,
+  low: { name: 'low', label: 'Low', maxTex: 8192, memMB: 176, framePx: 4.2e6, dprCap: 1, mobileDpr: 1.5,
     workers: 2, tileWorkers: 1, mapWorkers: 1, maxFrames: 24, defFrames: 6, maxFrameMB: 40, antialias: false,
-    tileCacheMB: 16, lite: true },
-  medium: { name: 'medium', label: 'Medium', maxTex: 4096, memMB: 256, framePx: 4e6, dprCap: 1.25,
-    workers: 3, tileWorkers: 2, mapWorkers: 2, maxFrames: 48, defFrames: 10, maxFrameMB: 120, antialias: false,
-    tileCacheMB: 32, lite: false },
-  high: { name: 'high', label: 'High', maxTex: 8192, memMB: 1024, framePx: 24e6, dprCap: 2,
+    tileCacheMB: 24, lite: true },
+  medium: { name: 'medium', label: 'Medium', maxTex: 8192, memMB: 600, framePx: 8.5e6, dprCap: 1.5, mobileDpr: 2,
+    workers: 3, tileWorkers: 2, mapWorkers: 2, maxFrames: 48, defFrames: 10, maxFrameMB: 150, antialias: false,
+    tileCacheMB: 48, lite: false },
+  high: { name: 'high', label: 'High', maxTex: 8192, memMB: 1536, framePx: 30e6, dprCap: 2, mobileDpr: 2,
     workers: 5, tileWorkers: 3, mapWorkers: 2, maxFrames: 120, defFrames: 24, maxFrameMB: 900, antialias: true,
-    tileCacheMB: 96, lite: false },
+    tileCacheMB: 64, lite: false },
 };
 export const TIERS = ['low', 'medium', 'high'];
 
@@ -56,10 +67,9 @@ export const lowerTier = (a) => TIERS[Math.max(0, TIERS.indexOf(a) - 1)];
 
 export function makeTier(name, d) {
   const t = { ...BASE[name] };
-  t.maxTex = Math.min(t.maxTex, d.maxTex || 4096);
   t.workers = Math.max(1, Math.min(t.workers, (d.cores || 4) - 1));
   t.tileWorkers = Math.max(1, Math.min(t.tileWorkers, Math.floor((d.cores || 4) / 2)));
-  if (d.mobile) t.dprCap = Math.min(t.dprCap, name === 'high' ? 2 : 1.5);
+  if (d.mobile) t.dprCap = t.mobileDpr;
   return t;
 }
 

@@ -2,9 +2,10 @@
  * terminator, satellite frames as worker-rendered raster tiles, and 3D terrain built from
  * cloud-top heights (and optionally real ground elevation).
  *
- * Satellite frames use two "ping-pong" raster layers: the next frame's tiles load into the
- * hidden layer and it is revealed (or cross-faded) when ready. GPU memory therefore holds two
- * frames' tiles however long the loop is — the key to smooth loops on low-end devices.
+ * Satellite frames use a front raster layer and a hidden one: the next frame's tiles load into
+ * the hidden layer (during playback while the current frame is still on screen) and it is
+ * revealed (or cross-faded) when ready. GPU memory therefore holds two frames' tiles (three
+ * while cross-fading) however long the loop is — the key to smooth loops on low-end devices.
  */
 import * as maplibregl from '../vendor/maplibre/maplibre-gl.mjs';
 import { TileRouter } from './tiles/router.js';
@@ -13,7 +14,9 @@ import { outline } from './geo.js';
 const OFM = 'https://tiles.openfreemap.org';
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const TERRARIUM = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
-const HIDDEN = 0.001; // a hidden ping-pong layer: invisible, but MapLibre keeps loading its tiles
+// a hidden layer: MapLibre keeps loading the tiles of a raster layer at opacity 0 (only
+// visibility 'none' or its zoom range unloads a source) but skips drawing it
+const HIDDEN = 0;
 const emptyFC = () => ({ type: 'FeatureCollection', features: [] });
 const THEMES = {
   dark: { bg: '#0d1626', water: '#081a33', land: '#16202f', line: 'rgba(225,236,252,0.62)', state: 'rgba(210,222,240,0.32)', label: '#e9eef6', halo: 'rgba(3,6,12,0.85)', night: '#01030c' },
@@ -171,8 +174,8 @@ export class SatMap {
     this.opts = { theme, globe, labels, lite: !!tier.lite };
     this.tileSize = tier.name === 'low' ? 256 : 512;
     this.router = new TileRouter(tier.tileWorkers, { cacheMB: tier.tileCacheMB });
-    this.layer = { a: null, b: null }; // ping-pong: {src id, frame}
-    this.front = 'a';
+    // {id, frame, url}: the layer on screen, the next frame loading hidden, a frame being waited for
+    this.front = this.next = this.pending = null;
     this.lutId = '';
     this.opacity = 1;
     this.lights = true;
@@ -216,7 +219,7 @@ export class SatMap {
 
   _onStyle() {
     this._styled = true;
-    this.layer = { a: null, b: null };
+    this.front = this.next = this.pending = null; // a new style dropped every layer
     if (this.nightDate) this.setNight(this.nightDate, true);
     if (this._shown) { const f = this._shown; this._shown = null; this.showFrame(f, { force: true }); }
     this._applyTerrain();
@@ -285,18 +288,36 @@ export class SatMap {
     return Math.max(1, Math.min(14, Math.ceil(Math.log2(z0 / res))));
   }
 
-  _addLayer(slot, f, opacity) {
-    const map = this.map, id = `sat-${slot}-${f.id}-${this.lutId}-${this.lights ? 1 : 0}`;
-    const old = this.layer[slot];
-    if (old) { if (map.getLayer(old.id)) map.removeLayer(old.id); if (map.getSource(old.id)) map.removeSource(old.id); }
-    const spec = { type: 'raster', tiles: [this._tileUrl(f)], tileSize: this.tileSize, maxzoom: this._maxzoom(f) };
+  _addLayer(f, opacity) {
+    const map = this.map, id = `sat-${(this._lid = (this._lid || 0) + 1)}-${f.id}`, url = this._tileUrl(f);
+    const spec = { type: 'raster', tiles: [url], tileSize: this.tileSize, maxzoom: this._maxzoom(f) };
     const b = gridBounds(f.grid); if (b) spec.bounds = b;
     map.addSource(id, spec);
     map.addLayer({ id, type: 'raster', source: id,
       paint: { 'raster-opacity': opacity, 'raster-resampling': 'nearest', 'raster-fade-duration': 0, 'raster-opacity-transition': { duration: 0, delay: 0 } } }, 'sat-anchor');
-    this.layer[slot] = { id, frame: f };
-    return id;
+    return { id, frame: f, url };
   }
+
+  _removeLayer(l) {
+    if (!l) return;
+    if (this.map.getLayer(l.id)) this.map.removeLayer(l.id);
+    if (this.map.getSource(l.id)) this.map.removeSource(l.id);
+  }
+
+  /** The layer exists and shows frame f with the current colours / lights. */
+  _holds(l, f) { return !!l && l.frame === f && l.url === this._tileUrl(f) && !!this.map.getLayer(l.id); }
+
+  /**
+   * Start loading a frame's tiles in a hidden layer (playback: the frame after the one on
+   * screen), so that showing it later is an instant swap.
+   */
+  prefetch(f) {
+    if (!this._styled || !f || this._holds(this.front, f) || this._holds(this.next, f) || this._holds(this.pending, f)) return;
+    this._removeLayer(this.next);
+    this.next = this._addLayer(f, HIDDEN);
+  }
+
+  cancelPrefetch() { this._removeLayer(this.next); this.next = null; }
 
   /** Wait until a source has the tiles for the current view (or a timeout). */
   _loaded(id, ms = 8000) {
@@ -321,46 +342,45 @@ export class SatMap {
    */
   async showFrame(f, { blendMs = 0, force = false } = {}) {
     if (!this._styled) { this._shown = f; return; }
-    const front = this.layer[this.front];
-    if (!force && front && front.frame === f && this._shownLut === this.lutId) return;
+    if (!force && this._holds(this.front, f)) return;
     const seq = (this._seq = (this._seq || 0) + 1);
-    this._shown = f; this._shownLut = this.lutId;
-    const back = this.front === 'a' ? 'b' : 'a';
-    const first = !this.layer[this.front] || !this.map.getLayer(this.layer[this.front].id);
-    // nothing on screen yet: show the tiles as they arrive instead of waiting for all of them
-    const id = this._addLayer(back, f, first ? this.opacity : HIDDEN);
-    await this._loaded(id, first ? 6000 : 4000);
-    if (seq !== this._seq || !this.map.getLayer(id)) return;
+    this._shown = f;
     const map = this.map;
-    const fid = this.layer[this.front]?.id;
-    map.setPaintProperty(id, 'raster-opacity-transition', { duration: blendMs, delay: 0 });
-    map.setPaintProperty(id, 'raster-opacity', this.opacity);
-    if (fid && map.getLayer(fid)) {
-      // the old frame stays fully visible under the fading-in new one, then goes: a layer kept at
-      // near-zero opacity would still be drawn on every map frame and hold its tiles on the GPU
-      map.moveLayer(id, 'sat-anchor');
-      setTimeout(() => {
-        if (!map.getLayer(fid) || this.layer[this.front]?.id === fid) return;
-        map.removeLayer(fid);
-        if (map.getSource(fid)) map.removeSource(fid);
-        for (const s of ['a', 'b']) if (this.layer[s]?.id === fid) this.layer[s] = null;
-      }, blendMs + 30);
+    const first = !this.front || !map.getLayer(this.front.id);
+    let l;
+    if (this._holds(this.next, f)) { l = this.next; this.next = null; } // prefetched: usually loaded already
+    else if (this._holds(this.pending, f)) l = this.pending;
+    // nothing on screen yet: show the tiles as they arrive instead of waiting for all of them
+    else l = this._addLayer(f, first ? this.opacity : HIDDEN);
+    if (this.pending !== l) this._removeLayer(this.pending); // an earlier request still loading
+    this.pending = l;
+    await this._loaded(l.id, first ? 6000 : 4000);
+    if (seq !== this._seq || !map.getLayer(l.id)) return;
+    this.pending = null;
+    map.setPaintProperty(l.id, 'raster-opacity-transition', { duration: blendMs, delay: 0 });
+    map.setPaintProperty(l.id, 'raster-opacity', this.opacity);
+    const old = this.front;
+    if (old && old !== l && map.getLayer(old.id)) {
+      // the old frame stays fully visible under the fading-in new one, then goes: a layer kept
+      // on screen would still be drawn on every map frame and hold its tiles on the GPU
+      map.moveLayer(l.id, 'sat-anchor');
+      setTimeout(() => this._removeLayer(old), blendMs + 30);
     }
-    this.front = back;
+    this.front = l;
     if (this.cloud3d.on) this._cloudDemSoon(f);
   }
 
   setOpacity(v) {
     this.opacity = v;
-    const fr = this.layer[this.front];
+    const fr = this.front;
     if (fr && this.map.getLayer(fr.id)) { this.map.setPaintProperty(fr.id, 'raster-opacity-transition', { duration: 0 }); this.map.setPaintProperty(fr.id, 'raster-opacity', v); }
   }
 
   setLights(on) { this.lights = on; if (this._shown) this.showFrame(this._shown, { force: true }); }
 
   clearFrames() {
-    for (const s of ['a', 'b']) { const l = this.layer[s]; if (l) { if (this.map.getLayer(l.id)) this.map.removeLayer(l.id); if (this.map.getSource(l.id)) this.map.removeSource(l.id); } }
-    this.layer = { a: null, b: null }; this._shown = null;
+    for (const l of [this.front, this.next, this.pending]) this._removeLayer(l);
+    this.front = this.next = this.pending = null; this._shown = null;
   }
 
   // ------------------------------------------------------------------ 3D terrain

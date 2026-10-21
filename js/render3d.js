@@ -42,7 +42,7 @@ const PRESETS = {
   structure: { density: 1.15, coverage: 0.08, detail: 0.55, visibility: 320, exposure: 1.1, vex: 2, rain: false },
 };
 // what is remembered between visits (sun angles only when set by hand)
-const SAVED = ['look', 'preset', 'vex', 'fov', 'visibility', 'exposure', 'quality', 'footprint', 'baseAuto', 'baseKm',
+const SAVED = ['look', 'preset', 'vex', 'fov', 'visibility', 'exposure', 'quality', 'footprint', 'sunAuto', 'sunElev', 'sunAzim', 'baseAuto', 'baseKm',
   'density', 'coverage', 'detail', 'rain', 'framesMode', 'speed'];
 
 // ------------------------------------------------------------------ helpers

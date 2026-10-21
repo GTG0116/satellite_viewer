@@ -10,11 +10,10 @@
 import { H5File, setInflate, decodeChunk } from './hdf5.js';
 import { inflateZlib } from './inflate.js';
 import { RangeSource, fetchBytes, setMaxInflight, stats } from './range.js';
-import { bunzip2 } from './bzip2.js';
-import { parseHSD, hsdCalibrator, hsdGrid } from './hsd.js';
 import { composite } from './composites.js';
-import { buildFields } from './retrieve3d.js';
 import { Q16, NAN_CODE, kindForBand } from '../catalog.js';
+// Himawari's decoders and the 3D cloud retrieval load on first use (every worker would parse them at start)
+const hsdMods = () => Promise.all([import('./bzip2.js'), import('./hsd.js')]);
 import { subgrid } from '../geo.js';
 
 setInflate(inflateZlib);
@@ -38,7 +37,9 @@ const first = (a) => (Array.isArray(a) ? a[0] : a);
  *  win: [R0, R1, C0, C1] in 2 km pixels (null = whole grid); ko: output px per 2 km px. */
 async function goesFile({ url, size, vars, win, ko }, signal) {
   const b0 = stats.bytes;
-  const src = new RangeSource(url, size, { head: size < 1500000 ? size : 256 * 1024, signal });
+  // the MCMIP header, group and attribute data span ~450 kB: one request instead of three round trips
+  const head = /MCMIP/.test(url) ? 512 * 1024 : 256 * 1024;
+  const src = new RangeSource(url, size, { head: size < 1500000 ? size : head, signal });
   const f = await H5File.open(src);
   const [xd, yd, pd] = await Promise.all([f.dataset('x'), f.dataset('y'), f.dataset('goes_imager_projection')]);
   const [xv, yv] = await Promise.all([f.readAll(xd), f.readAll(yd)]);
@@ -157,7 +158,7 @@ async function amiFile({ url, size, k, win, ko }, signal) {
 
 // ------------------------------------------------------------------ Himawari HSD
 async function hsdSeg({ url, size, rowBase, rowEnd, c0, c1, s, localRows }, signal) {
-  const comp = await fetchBytes(url, 0, size, signal);
+  const [comp, [{ bunzip2 }, { parseHSD, hsdCalibrator, hsdGrid }]] = await Promise.all([fetchBytes(url, 0, size, signal), hsdMods()]);
   const raw = bunzip2(comp, size * 4);
   const h = parseHSD(raw);
   const g0 = localRows ? 0 : h.firstLine - 1;      // global row of local row 0
@@ -194,6 +195,7 @@ function runComposite({ recipe, bands, out, irLut }) {
 }
 
 async function retrieve3d(args) {
+  const { buildFields } = await import('./retrieve3d.js');
   const out = await buildFields(args);
   const r = out.result;
   return { result: r, transfer: [r.field1.buffer, r.field2.buffer, r.field3.buffer, r.elev.buffer] };

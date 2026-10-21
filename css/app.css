@@ -126,6 +126,8 @@ input[type=search], input[type=datetime-local], input[type=number] { background:
 #legendTitle { font-size: 12px; color: var(--muted); margin-bottom: 5px; }
 #legendBar { height: 10px; border-radius: 3px; }
 #legendTicks { display: flex; justify-content: space-between; margin-top: 3px; color: var(--muted); font-size: 11px; }
+#legendTicks.abs { display: block; position: relative; height: 1.3em; }
+#legendTicks.abs span { position: absolute; top: 0; white-space: nowrap; }
 #probe { position: fixed; left: var(--gut); bottom: calc(var(--tl-top) + 112px); padding: 7px 10px; z-index: 12; font-size: 12px; max-width: 290px; pointer-events: none; }
 #probe b { color: var(--accent-2); font-weight: 600; }
 #fps { position: fixed; top: calc(60px + var(--safe-t)); left: var(--gut); z-index: 12; font-size: 11px; color: var(--ok); background: rgba(0,0,0,.45); padding: 2px 6px; border-radius: 6px; pointer-events: none; }

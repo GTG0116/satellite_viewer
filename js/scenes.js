@@ -168,7 +168,7 @@ export async function loadFrame(p, scan, pool, { pri = 5, signal } = {}) {
       transfer.push(codes.buffer);
       bands[role] = { codes, w: d.w, h: d.h, f: p.k[b] >= p.ko ? 1 : p.ko / p.k[b], kind: d.kind };
     }
-    irLut ||= buildLut('ir_color', 163, 330);
+    irLut ||= buildLut('ir_sandwich', 163, 330); // Sandwich's own cold-top enhancement
     const time = new Date(scan.t.getTime() + (p.sector === 'full' ? 5 : 1) * 60e3); // mid-scan sun
     const r = await pool.run('composite', { recipe: p.product, bands, out: { w, h, grid: { ...og, ny: h, nx: w }, time }, irLut },
       { pri, signal, transfer });

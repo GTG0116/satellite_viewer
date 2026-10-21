@@ -1,13 +1,13 @@
 /* App-shell cache: the viewer's own files and the static map assets load from the cache, so a
  * repeat visit on a slow connection starts instantly. Satellite data is never cached here
  * (it changes every few minutes and is far too large). */
-const VERSION = 'satview-v3';
+const VERSION = 'satview-v4';
 const SHELL = ['./', 'index.html', 'css/app.css', 'config.js', 'icon.svg', 'manifest.webmanifest',
   'vendor/maplibre/maplibre-gl.mjs', 'vendor/maplibre/maplibre-gl-shared.mjs', 'vendor/maplibre/maplibre-gl-worker.mjs', 'vendor/maplibre/maplibre-gl.css',
-  'js/app.js', 'js/map.js', 'js/volume.js', 'js/catalog.js', 'js/geo.js', 'js/scenes.js', 'js/listing.js', 'js/pool.js', 'js/perf.js',
+  'js/boot.js', 'js/app.js', 'js/map.js', 'js/volume.js', 'js/catalog.js', 'js/geo.js', 'js/scenes.js', 'js/listing.js', 'js/pool.js', 'js/perf.js',
   'js/tiles/router.js', 'js/tiles/tileworker.js', 'js/decode/worker.js', 'js/decode/hdf5.js', 'js/decode/inflate.js', 'js/decode/range.js',
   'js/decode/bzip2.js', 'js/decode/hsd.js', 'js/decode/composites.js', 'js/decode/retrieve3d.js'];
-const STATIC_HOSTS = ['tiles.openfreemap.org', 'gibs.earthdata.nasa.gov'];
+const STATIC_HOSTS = ['tiles.openfreemap.org']; // (GIBS city lights: cached by the tile workers)
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

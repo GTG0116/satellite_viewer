@@ -34,6 +34,14 @@ Bands are named as KMA does (VI004 … IR133). Visible composites of the full di
 chunk (≈ 600 MB a frame), too heavy below High: GK2A then opens on Air Mass (Medium) or IR105 (Low).
 The Local Area and custom boxes are light.
 
+## Settings
+
+Everything you set is kept in `localStorage` and restored on the next visit: satellite, sector,
+product, the colour table of each product, the Data / Display / 3D / Settings tab, the product-group
+filter (All, RGB, Visible, Infrared, Water Vapor), the folded side panel, every map and loop option,
+the quality tier, the archive window, the camera and every 3D-view option. A `#sat=…` link still
+takes precedence. The Clean IR colour table and the legend's brightness temperatures are in °C.
+
 ## VR
 
 The 3D cloud volume has a VR button (goggles) when the browser supports WebXR `immersive-vr` (Quest
@@ -82,18 +90,22 @@ directly, as on GitHub Pages.
 
 A quality tier (Low / Medium / High) is picked from the device (memory, CPU cores, the GPU, GPU
 limits, Save-Data) and can be changed under *Settings*. High needs a dedicated graphics card; laptops
-with integrated graphics (Intel UHD / Iris, AMD APUs, Chromebooks) get Medium, or Low with ≤ 4 GB or
-≤ 4 threads. It sets:
+with integrated graphics (Intel UHD / Iris, AMD APUs, Chromebooks) and high-end phones get Medium;
+phones and laptops with ≤ 4 GB or ≤ 4 threads get Low. Each tier's memory is sized so that its
+default view runs at the sector's full resolution:
 
-| | Low | Medium | High |
+| | Low (phones, low-end laptops) | Medium (high-end phones, laptops) | High (desktops, gaming laptops) |
 |---|---|---|---|
-| Decoded frames kept | 96 MB | 256 MB | 1 GB |
-| Pixels per frame | 1.6 M | 4 M | 24 M |
-| Max download per frame | 40 MB | 120 MB | 900 MB |
-| Default loop | 6 frames | 10 | 24 |
+| Decoded frames kept | 176 MB | 600 MB | 1.5 GB |
+| Pixels per frame | 4.2 M | 8.5 M | 30 M |
+| Default view (CONUS GeoColor) | 2 km, 6 frames | 2 km, 10 frames | 2 km, 24 frames |
+| Full disk | 6 km | 4 km | 4 km (24 frames), native 2 km (≤ 6) |
+| Max download per frame | 40 MB | 150 MB | 900 MB |
 | Decode / tile / map workers | 2 / 1 / 1 | 3 / 2 / 2 | 5 / 3 / 2 |
-| Map tiles | 256 px, 1× pixel ratio | 512 px, ≤1.25× | 512 px, ≤2× |
+| Map tiles | 256 px; pixel ratio 1 (phones 1.5) | 512 px; ≤ 1.5 (phones 2) | 512 px; ≤ 2 |
 | Base map | no relief layer, no atmosphere glow | full | full |
+
+Longer loops than the default share the same memory, so each frame then gets fewer pixels.
 
 With *Quality: Auto* the tier also adapts while the viewer runs:
 
@@ -102,8 +114,16 @@ With *Quality: Auto* the tier also adapts while the viewer runs:
 - If the browser runs out of memory decoding a frame, the page reloads one tier lower (on Low, the
   loop is halved instead). Choosing *Auto* again re-tests the device.
 
-Other things that keep it light:
+Other things that keep it fast and light:
 
+- `js/boot.js` runs before MapLibre (1 MB) has loaded: it starts the decode workers, lists the
+  bucket and starts downloading the newest frame of the saved view, so the data and the map load
+  side by side. All modules are `modulepreload`ed (one round trip, not one per import level).
+- During playback the frame after the shown one loads its tiles in a hidden layer (opacity 0:
+  MapLibre loads its tiles but does not draw it), so each step is an instant swap.
+- All frames on the same grid share one tile worker, so a loop navigates each map tile and
+  resamples its city lights once. The Black Marble city-light tiles are kept in Cache Storage
+  (NASA serves them uncacheable).
 - Frames are stored as 16-bit codes (or RGBA for composites) at a resolution fitted to the tier and the
   loop length. Each product shows its download size per frame; ones too heavy for the tier are dimmed.
 - GOES uses the 2 km multi-band L2 MCMIP files by default (one file, only the needed bands are
@@ -122,6 +142,7 @@ Other things that keep it light:
 ```
 web/
   index.html  css/app.css  config.js  sw.js  manifest.webmanifest
+  js/boot.js         settings, device tier, decode workers, first frame (runs before the map loads)
   js/app.js          UI, state, loading, playback, archive
   js/map.js          MapLibre map, ping-pong frame layers, terrain, night
   js/volume.js       3D volume tools on the map

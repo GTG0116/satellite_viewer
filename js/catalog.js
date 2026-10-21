@@ -84,7 +84,7 @@ export const kindForBand = (b) => (b <= 6 ? 'refl' : 'bt');
 
 export const IR_CMAPS = ['ir_color', 'ir_gray', 'ir_rainbow', 'ir_bd', 'wv', 'turbo'];
 export const VIS_CMAPS = ['vis', 'gray'];
-export const FIXED_RANGE = { ir_color: [163, 330], ir_rainbow: [163, 330], ir_bd: [163, 330], wv: [180, 290] };
+export const FIXED_RANGE = { ir_color: [-90 + 273.15, 40 + 273.15], ir_rainbow: [163, 330], ir_bd: [163, 330], wv: [180, 290] };
 export const BAND_RANGE = { 1: [0, 1.1], 2: [0, 1.1], 3: [0, 1.1], 4: [0, 0.5], 5: [0, 0.8], 6: [0, 0.6], 7: [200, 330],
   8: [195, 260], 9: [200, 270], 10: [205, 280], 11: [180, 320], 12: [180, 310], 13: [180, 320], 14: [180, 320], 15: [180, 320], 16: [190, 290] };
 
@@ -119,13 +119,16 @@ export function products(sat) {
   for (const [id, r] of Object.entries(RGBS)) {
     if (r.roles.every((x) => x.endsWith('?') || x in roles)) out.push({ id, name: r.name, group: 'RGB', desc: r.desc, kind: 'rgb' });
   }
+  const single = [];
   for (const [b, [name, wl, kind, res]] of Object.entries(bands)) {
     const n = +b;
-    out.push({ id: `b${String(n).padStart(2, '0')}`, band: n, name: `${bandLabel(sat, n)} · ${wl} µm`, label: name,
-      group: kind === 'vis' ? 'Visible' : 'Infrared', desc: `native ${res} km`, kind,
+    single.push({ id: `b${String(n).padStart(2, '0')}`, band: n, name: `${bandLabel(sat, n)} · ${wl} µm`, label: name,
+      group: kind === 'vis' ? 'Visible' : n >= 8 && n <= 10 ? 'Water Vapor' : 'Infrared', desc: `native ${res} km`, kind,
       cmaps: kind === 'vis' ? VIS_CMAPS : IR_CMAPS, cmap: cmapFor(sat, n) });
   }
-  return out;
+  // Visible, Infrared, then Water Vapor (bands 8-10) as a section of its own (sort is stable)
+  const G = ['Visible', 'Infrared', 'Water Vapor'];
+  return out.concat(single.sort((a, b) => G.indexOf(a.group) - G.indexOf(b.group)));
 }
 
 /** Bands a product needs: {role: band}. */
@@ -162,6 +165,16 @@ function grayStops(lo, hi, invert = false, gamma = 1, n = 32) {
   }
   return out;
 }
+// Clean IR colour table, defined in °C: grayscale from black (40 °C) to white (-20 °C), then
+// cyan -> navy -> green -> yellow -> red -> black (-70 °C), grays (-70 .. -80 °C), and pink
+// -> purple for the coldest tops (-80 .. -90 °C). Values beyond either end keep the end colour.
+const IR_COLOR_C = [
+  [-90, '#7e0281'], [-80, '#e86ebc'], [-79.99, '#ebebeb'], [-75, '#858585'], [-70, '#000000'],
+  [-65, '#970000'], [-60, '#ff0000'], [-55, '#fd9600'], [-50, '#ffff00'], [-45, '#67ff00'],
+  [-41, '#0fff00'], [-40, '#00e608'], [-35, '#04644f'], [-30, '#000073'], [-25, '#0096c3'],
+  [-20, '#00f0f0'], [-19.99, '#ffffff'], [-10, '#eeeeee'], [0, '#cdcdcd'], [10, '#a0a0a0'],
+  [20, '#707070'], [30, '#404040'], [40, '#000000'],
+];
 const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
 const H = (arr) => arr.map(([v, c]) => [v, hex(c)]);
 
@@ -169,7 +182,8 @@ const STOPS = {
   vis: (lo, hi) => grayStops(lo, hi, false, 0.5, 64),
   gray: (lo, hi) => grayStops(lo, hi),
   ir_gray: (lo, hi) => grayStops(lo, hi, true),
-  ir_color: () => H([[163, '#ffffff'], [180, '#f0f0f0'], [186, '#e2d4ff'], [191, '#b48cff'], [196, '#7b2cbf'], [201, '#3c096c'],
+  ir_color: () => H(IR_COLOR_C.map(([c, col]) => [c + 273.15, col])),
+  ir_sandwich: () => H([[163, '#ffffff'], [180, '#f0f0f0'], [186, '#e2d4ff'], [191, '#b48cff'], [196, '#7b2cbf'], [201, '#3c096c'],
     [206, '#6a040f'], [211, '#b0151d'], [216, '#ef3b1f'], [221, '#ff7b00'], [226, '#ffb703'], [230, '#ffe94d'], [234, '#7dd87a'],
     [238, '#2a9d8f'], [241, '#2b6cb0'], [243, '#5a8fd6'], [243.0001, '#d6d6d6'], [253, '#bdbdbd'], [273, '#8a8a8a'],
     [293, '#4a4a4a'], [313, '#181818'], [330, '#000000']]),
