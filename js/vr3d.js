@@ -24,6 +24,11 @@
  * headset's resolution, the clouds ray-marched at a lower one with cheaper lighting and coarser
  * steps toward the edge of the lens, then composited (Viewer.compositeVR).
  *
+ * Two profiles: a standalone headset (Quest Browser) renders on its mobile GPU and keeps the clouds
+ * coarse; a PC headset (Chrome / Edge with Meta Link / Air Link, Virtual Desktop or SteamVR) renders
+ * on the desktop GPU, so the clouds go up to the headset's full resolution with more steps, finer
+ * lighting and no foveation. Either way the resolution backs off when the frame rate drops.
+ *
  * Stereo: at true size the eyes are 6 cm apart and the clouds kilometres away, so the view has
  * no depth. In auto mode the eye separation grows with the distance to the nearest ground or
  * cloud (hyperstereo), so that always looks a few metres away and everything behind it has
@@ -35,6 +40,31 @@ const STEREO_NEAR = 50;
 const DEAD = 0.15;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const dz = (x) => (Math.abs(x) < DEAD ? 0 : (x - Math.sign(x) * DEAD) / (1 - DEAD));
+
+// Per quality setting: cloud and ground resolution (fraction of the eye's viewport) and ray-march
+// steps at full level, each falling to its minimum as the level drops; light taps toward the sun
+// (and their growth), step growth toward the edge of the lens and the XR foveation
+const PROFILES = {
+  standalone: {
+    cloud: { draft: 0.34, standard: 0.45, high: 0.58 }, cloudMin: 0.22,
+    terr: { draft: 0.6, standard: 0.8, high: 1 }, terrMin: 0.7,
+    steps: { draft: 100, standard: 150, high: 190 }, stepsMin: 56,
+    taps: 5, grow: 2.9, fov: 0.8, foveation: 1,
+  },
+  pc: {
+    cloud: { draft: 0.6, standard: 0.8, high: 1 }, cloudMin: 0.35,
+    terr: { draft: 1, standard: 1, high: 1 }, terrMin: 0.85,
+    steps: { draft: 150, standard: 220, high: 300 }, stepsMin: 80,
+    taps: 6, grow: 2.3, fov: 0.4, foveation: 0,
+  },
+};
+
+/** A headset running the page itself (Quest / Pico / Vision Pro / phone) rather than a PC streaming to one. */
+function standalone() {
+  const ua = navigator.userAgent || '';
+  if (/OculusBrowser|Quest|Pico|Wolvic|Android|Mobile|iPhone|iPad/i.test(ua)) return true;
+  return /Macintosh/.test(ua) && navigator.maxTouchPoints > 1; // visionOS / iPadOS Safari
+}
 
 export const VR_HELP = 'Left stick: fly · Right stick ↕: elevation, ↔: turn · Grip + right stick ↕: cloud height · '
   + 'Trigger: faster · A/X: grow · B/Y: true size · Right stick click: play loop · Left stick click: 3D depth auto / natural';
@@ -62,6 +92,8 @@ export class VRMode {
     this.stereoT = 0;
     this.camT = 0;
     this.tmp = new THREE.Vector3();
+    this.pc = !standalone();
+    this.prof = PROFILES[this.pc ? 'pc' : 'standalone'];
   }
 
   static async supported() {
@@ -88,8 +120,10 @@ export class VRMode {
     this.rig.si = 0;
     session.addEventListener('end', () => this.onEnd());
     r.xr.setReferenceSpaceType(space);
+    // the runtime's recommended size: on a PC that is the Link / SteamVR render-resolution setting
+    r.xr.setFramebufferScaleFactor(1);
     await r.xr.setSession(session);
-    r.xr.setFoveation(1);
+    r.xr.setFoveation(this.prof.foveation);
     // the lowest refresh rate the headset offers from 72 Hz up: the most time per frame
     const rates = session.supportedFrameRates ? [...session.supportedFrameRates].filter((x) => x >= 72).sort((a, b) => a - b) : [];
     if (rates.length && session.updateTargetFrameRate) session.updateTargetFrameRate(rates[0]).catch(() => {});
@@ -289,12 +323,12 @@ export class VRMode {
 
   /** Render each eye of cams (XR views: position, quaternion, projectionMatrix, viewport) into target. */
   drawEyes(cams, target, dt) {
-    const v = this.v, q = v.params.quality, L = this.level;
+    const v = this.v, P = this.prof, L = this.level;
+    const q = P.cloud[v.params.quality] ? v.params.quality : 'standard';
     // the clouds are soft and can run coarse; the ground and sky stay close to the headset's resolution
-    const base = { draft: 0.34, standard: 0.45, high: 0.58 }[q] || 0.45;
-    const cres = 0.22 + (base - 0.22) * L;
-    const tres = ({ draft: 0.6, standard: 0.8, high: 1 }[q] || 0.8) * (0.7 + 0.3 * L);
-    const steps = Math.round(56 + (({ draft: 100, standard: 150, high: 190 }[q] || 150) - 56) * L);
+    const cres = P.cloudMin + (P.cloud[q] - P.cloudMin) * L;
+    const tres = P.terr[q] * (P.terrMin + (1 - P.terrMin) * L);
+    const steps = Math.round(P.stepsMin + (P.steps[q] - P.stepsMin) * L);
     const vp0 = cams[0].viewport;
     this.ensureTargets(vp0.z * cres, vp0.w * cres, vp0.z * tres, vp0.w * tres);
     this.updateHead(cams);
@@ -325,7 +359,8 @@ export class VRMode {
     e.projectionMatrixInverse.copy(e.projectionMatrix).invert();
     // where the eye looks straight ahead (uv): steps grow from there toward the edge of the lens
     const centre = [0.5 - m[8] / 2, 0.5 - m[9] / 2];
-    v.renderFrame(this.terrRT, this.cloudRT, null, 1, steps, 1.8, false, e, { taps: 5, grow: 2.9, fov: 0.8, centre });
+    const P = this.prof;
+    v.renderFrame(this.terrRT, this.cloudRT, null, 1, steps, 1.8, false, e, { taps: P.taps, grow: P.grow, fov: P.fov, centre });
     const vp = xc.viewport;
     target.viewport.set(vp.x, vp.y, vp.z, vp.w);
     v.compositeVR(this.cloudRT, this.terrRT, e, target);

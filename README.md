@@ -80,6 +80,12 @@ Browser, or Chrome / Edge on a PC with a SteamVR / Oculus Link headset; the page
 HTTPS or from localhost). You start where the 3D camera was, at true size. Each eye is ray-marched
 separately at a resolution that adapts to the headset's frame rate.
 
+For the sharpest view, connect the headset to a PC (Meta Link cable or Air Link, Virtual Desktop, or
+SteamVR) and open the page in Chrome / Edge on the PC: the desktop GPU renders the clouds at up to the
+headset's full resolution, with more ray-march steps and no foveation. The render resolution is the
+one set in the Link app (or SteamVR); 72 Hz leaves the most time per frame. In the Quest Browser on
+its own the clouds are rendered coarser for the headset's mobile GPU.
+
 | Control | Does |
 |---|---|
 | Left stick | Fly over the ground toward where you look (faster higher up) |
