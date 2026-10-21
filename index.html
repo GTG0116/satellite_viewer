@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#060b14">
-<meta name="description" content="Live GOES, Himawari and GK2A satellite imagery on a 3D globe, decoded in your browser from the raw NOAA files.">
+<meta name="description" content="Live GOES, Himawari, GK2A and polar-orbiter (VIIRS, ATMS) satellite imagery on a 3D globe, decoded in your browser from the raw NOAA files, with GLM lightning and tropical cyclones.">
 <title>Satellite Viewer</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -25,6 +25,9 @@
 <link rel="modulepreload" href="js/app.js">
 <link rel="modulepreload" href="js/map.js">
 <link rel="modulepreload" href="js/volume.js">
+<link rel="modulepreload" href="js/polar.js">
+<link rel="modulepreload" href="js/glm.js">
+<link rel="modulepreload" href="js/overlays.js">
 <link rel="modulepreload" href="js/tiles/router.js">
 <link rel="modulepreload" href="vendor/maplibre/maplibre-gl.mjs">
 <link rel="modulepreload" href="vendor/maplibre/maplibre-gl-shared.mjs">
@@ -32,6 +35,8 @@
 <link rel="preconnect" href="https://noaa-goes19.s3.amazonaws.com" crossorigin>
 <link rel="dns-prefetch" href="https://noaa-himawari9.s3.amazonaws.com">
 <link rel="dns-prefetch" href="https://noaa-gk2a-pds.s3.amazonaws.com">
+<link rel="dns-prefetch" href="https://noaa-nesdis-n20-pds.s3.amazonaws.com">
+<link rel="dns-prefetch" href="https://mapservices.weather.noaa.gov">
 <link rel="preconnect" href="https://gibs.earthdata.nasa.gov" crossorigin>
 </head>
 <body>
@@ -40,7 +45,7 @@
 
 <header id="top">
   <div class="brand">
-    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="5.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 15.5c3.5 2.6 14.5-3.3 18-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="20.2" cy="7.6" r="1.6" fill="currentColor"/></svg>
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><g transform="rotate(-35 12 12)" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="9.6" y="9.2" width="4.8" height="5.6" rx="0.9"/><rect x="2.4" y="10" width="5.6" height="4" rx="0.4"/><rect x="16" y="10" width="5.6" height="4" rx="0.4"/><path d="M5.2 10v4M18.8 10v4M8 12h1.6M14.4 12H16M12 9.2V6.8"/><path d="M9.8 6.2a2.6 2.6 0 0 0 4.4 0" stroke-linecap="round"/></g></svg>
     <span class="brand-text">Satellite Viewer</span>
   </div>
   <div id="status" class="chip hidden" role="status" aria-live="polite"><span class="spinner"></span><span id="statusText"></span></div>
@@ -85,6 +90,7 @@
       <h3>Display</h3>
       <label class="row" id="cmapRow">Colour table <select id="cmapSel"></select></label>
       <label class="row">Opacity <input type="range" id="opacity" min="0" max="100" value="100"><span id="opacityVal" class="mono val">100%</span></label>
+      <label class="row check" title="Blend neighbouring satellite pixels (bilinear) instead of showing each pixel as a sharp square"><input type="checkbox" id="smoothChk"> Smooth imagery</label>
       <label class="row">Base map <select id="themeSel"><option value="dark">Dark</option><option value="light">Light</option><option value="satellite">Satellite imagery</option></select></label>
       <label class="row check"><input type="checkbox" id="globeChk" checked> Globe projection</label>
       <label class="row check"><input type="checkbox" id="labelsChk" checked> Place labels</label>
@@ -94,12 +100,17 @@
       <label class="row check"><input type="checkbox" id="outlineChk" checked> Sector outline</label>
       <label class="row check"><input type="checkbox" id="nightChk" checked> Day / night shading</label>
       <label class="row check" title="NASA Black Marble city lights under GeoColor's night side"><input type="checkbox" id="lightsChk" checked> City lights (GeoColor)</label>
+      <h3>Overlays</h3>
+      <label class="row check" title="Lightning flashes from the GOES Geostationary Lightning Mapper (GOES-East and GOES-West) in the minutes before the shown frame; the newest are brightest"><input type="checkbox" id="glmChk"> GLM lightning</label>
+      <label class="row" id="glmRow">Window <select id="glmMin"><option value="1">1 min</option><option value="5">5 min</option><option value="10">10 min</option><option value="15">15 min</option></select><span id="glmInfo" class="mono val"></span></label>
+      <label class="row check" title="Active tropical cyclones: NHC (Atlantic, East and Central Pacific) and JTWC (West Pacific, Indian Ocean, Southern Hemisphere) positions, past tracks and forecasts"><input type="checkbox" id="stormsChk" checked> Tropical cyclones (NHC / JTWC)</label>
+      <div id="stormList" class="storm-list"></div>
     </section>
 
     <section data-tab="three">
       <h3>3D cloud volume</h3>
       <button id="volBtn" class="btn vol"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z M4 7.5l8 4.5 8-4.5 M12 12v9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>Open 3D cloud volume</button>
-      <div class="note">Opens a 3D view beside the map (below it on phones). Draw a box or an area (20–1500 km) over the clouds: they are rebuilt as volumetric clouds from the satellite bands (cloud-top height, optical depth, bases by cloud type) over real terrain. Drag the corners to reshape, the green dot to move the 3D camera.</div>
+      <div class="note">Opens a 3D view beside the map (below it on phones). Draw a box or an area (20–1500 km) over the clouds: they are rebuilt as volumetric clouds from the satellite bands (cloud-top height, optical depth, bases by cloud type) over real terrain. Drag the corners to reshape, the violet dot to move the 3D camera.</div>
       <h3>3D on the map</h3>
       <label class="row check" title="Raise the imagery into a relief: infrared by cloud-top temperature (colder = taller), visible by reflectance"><input type="checkbox" id="threeChk"> 3D cloud tops</label>
       <label class="row">Height ×<input type="range" id="exag" min="1" max="60" value="10"><span id="exagVal" class="mono val">10×</span></label>
@@ -130,7 +141,7 @@
       <div id="perfInfo" class="note mono"></div>
       <label class="row check"><input type="checkbox" id="fpsChk"> Show frame rate</label>
       <h3>About</h3>
-      <div class="note">Imagery is decoded in your browser from the raw NOAA Open Data Dissemination files (GOES ABI NetCDF‑4 / HDF5, Himawari HSD bzip2, GK2A AMI NetCDF‑4). Map: MapLibre GL JS, OpenFreeMap / OpenStreetMap; terrain: AWS Terrain Tiles; 3D ground imagery: Esri; city lights: NASA GIBS. Nearest-pixel display, no smoothing.</div>
+      <div class="note">Imagery is decoded in your browser from the raw NOAA Open Data Dissemination files (GOES ABI NetCDF‑4 / HDF5, Himawari HSD bzip2, GK2A AMI NetCDF‑4, VIIRS SDR HDF5, MiRS ATMS NetCDF‑4, GLM LCFA). Tropical cyclones: NHC (NOAA tropical map service) and JTWC. Map: MapLibre GL JS, OpenFreeMap / OpenStreetMap; terrain: AWS Terrain Tiles; 3D ground imagery: Esri; city lights: NASA GIBS. Nearest-pixel display unless <i>Smooth imagery</i> is on.</div>
     </section>
   </div>
 </aside>
@@ -140,11 +151,16 @@
 <div id="fps" class="mono hidden"></div>
 <div id="drawHint" class="glass hidden"></div>
 
-<div id="volBar" class="glass hidden">
-  <span class="vb-title"><svg viewBox="0 0 24 24" width="15" height="15"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z M4 7.5l8 4.5 8-4.5 M12 12v9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>3D</span>
-  <button data-t="box">Box</button><button data-t="area">Area</button><button data-t="view">Whole view</button><button data-t="clear">Clear</button>
-  <button data-t="exit" aria-label="Close the 3D view"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
-</div>
+<div id="volBar" class="hidden" role="toolbar" aria-label="Pick the clouds for the 3D view">
+    <span class="vb-title">Pick clouds</span>
+    <div class="vb-seg">
+      <button data-t="box" title="Drag a box over the clouds"><svg viewBox="0 0 24 24" width="14" height="14"><rect x="4" y="5" width="16" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.9"/></svg>Box</button>
+      <button data-t="area" title="Click the corners of an area (polygon) around the clouds"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M5 8l7-4 7 5-2 10H7z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>Area</button>
+      <button data-t="view" title="Use everything the map shows (up to ~1500 km)"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M4 8V5h3M17 5h3v3M20 16v3h-3M7 19H4v-3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>Whole view</button>
+    </div>
+    <button data-t="clear" class="vb-ghost" title="Remove the box / area" aria-label="Remove the box / area"><svg viewBox="0 0 24 24" width="15" height="15"><path d="M4 20h16M7 16l9-9 3 3-9 9H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
+    <button data-t="exit" class="vb-ghost" title="Close the 3D view" aria-label="Close the 3D view"><svg viewBox="0 0 24 24" width="15" height="15"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+  </div>
 <footer id="timeline" class="glass">
   <div id="archiveBar" class="hidden">
     <button id="arcPrev" class="ib sm" aria-label="Previous window"><svg viewBox="0 0 24 24" width="15" height="15"><path d="M14.5 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>

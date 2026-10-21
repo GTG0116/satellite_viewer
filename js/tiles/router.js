@@ -72,16 +72,16 @@ export class TileRouter {
   }
 
   /** Register a colour table (code -> RGBA) on every worker once. */
-  async lut(lutId, lut, kind, vmin, vmax) {
+  async lut(lutId, lut, kind, vmin, vmax, below = null) {
     if (this.luts.has(lutId)) return;
     this.luts.add(lutId);
-    await Promise.all(this.workers.map((w) => this._call(w, 'lut', { id: lutId, lut, kind, vmin, vmax })));
+    await Promise.all(this.workers.map((w) => this._call(w, 'lut', { id: lutId, lut, kind, vmin, vmax, below })));
   }
 
-  tile(id, lutId, z, x, y, size, lights) {
+  tile(id, lutId, z, x, y, size, lights, smooth = false) {
     const w = this.owner.get(id);
     if (!w) return Promise.reject(new Error('frame not loaded'));
-    return this._call(w, 'tile', { id, lutId, z, x, y, size, lights });
+    return this._call(w, 'tile', { id, lutId, z, x, y, size, lights, smooth });
   }
 
   dem(id, z, x, y, ground) {

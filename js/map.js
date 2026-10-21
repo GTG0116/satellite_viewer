@@ -61,12 +61,12 @@ function buildStyle(theme, opts) {
     // 3D volume region, its handles, an area being drawn, and the 3D camera's view
     { id: 'r3dcam-fill', type: 'fill', source: 'r3dcam', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.13 } },
     { id: 'r3dcam-line', type: 'line', source: 'r3dcam', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'line-color': 'rgba(255,255,255,0.55)', 'line-width': 1 } },
-    { id: 'r3dbox-fill', type: 'fill', source: 'r3dbox', paint: { 'fill-color': '#3ddc97', 'fill-opacity': 0.14 } },
-    { id: 'r3dbox-line', type: 'line', source: 'r3dbox', paint: { 'line-color': '#3ddc97', 'line-width': 1.8 } },
-    { id: 'r3ddraw-line', type: 'line', source: 'r3ddraw', paint: { 'line-color': '#3ddc97', 'line-width': 1.6, 'line-dasharray': [2, 1.5] } },
-    { id: 'r3ddraw-pts', type: 'circle', source: 'r3ddraw', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 4.5, 'circle-color': '#0b1220', 'circle-stroke-color': '#3ddc97', 'circle-stroke-width': 2 } },
-    { id: 'r3dhandles', type: 'circle', source: 'r3dhandles', paint: { 'circle-radius': ['case', ['==', ['get', 'kind'], 'c'], 7, 6.5], 'circle-color': ['case', ['==', ['get', 'kind'], 'c'], '#3ddc97', '#0b1220'], 'circle-stroke-color': ['case', ['==', ['get', 'kind'], 'c'], '#ffffff', '#3ddc97'], 'circle-stroke-width': 2 } },
-    { id: 'r3dcam-pt', type: 'circle', source: 'r3dcam', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 7.5, 'circle-color': '#3ddc97', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2.2 } },
+    { id: 'r3dbox-fill', type: 'fill', source: 'r3dbox', paint: { 'fill-color': '#a48bff', 'fill-opacity': 0.14 } },
+    { id: 'r3dbox-line', type: 'line', source: 'r3dbox', paint: { 'line-color': '#a48bff', 'line-width': 1.8 } },
+    { id: 'r3ddraw-line', type: 'line', source: 'r3ddraw', paint: { 'line-color': '#a48bff', 'line-width': 1.6, 'line-dasharray': [2, 1.5] } },
+    { id: 'r3ddraw-pts', type: 'circle', source: 'r3ddraw', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 4.5, 'circle-color': '#0b1220', 'circle-stroke-color': '#a48bff', 'circle-stroke-width': 2 } },
+    { id: 'r3dhandles', type: 'circle', source: 'r3dhandles', paint: { 'circle-radius': ['case', ['==', ['get', 'kind'], 'c'], 7, 6.5], 'circle-color': ['case', ['==', ['get', 'kind'], 'c'], '#a48bff', '#0b1220'], 'circle-stroke-color': ['case', ['==', ['get', 'kind'], 'c'], '#ffffff', '#a48bff'], 'circle-stroke-width': 2 } },
+    { id: 'r3dcam-pt', type: 'circle', source: 'r3dcam', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 7.5, 'circle-color': '#a48bff', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2.2 } },
   );
   const label = (id, filter, size, extra = {}) => ({ id, type: 'symbol', source: 'omt', 'source-layer': 'place', filter,
     layout: { 'text-field': ['coalesce', ['get', 'name:en'], ['get', 'name_en'], ['get', 'name']], 'text-font': extra.bold ? fontB : font, 'text-size': size,
@@ -179,6 +179,7 @@ export class SatMap {
     this.lutId = '';
     this.opacity = 1;
     this.lights = true;
+    this.smooth = false;
     this.cloud3d = { on: false, exag: 10 };
     this.ground3d = { on: false, exag: 1.5 };
     maplibregl.setWorkerCount(tier.mapWorkers);
@@ -202,11 +203,11 @@ export class SatMap {
   _protocols() {
     if (SatMap._protoDone) { SatMap._active = this; return; }
     SatMap._protoDone = true; SatMap._active = this;
-    // satv://t/<frame id>/<lut id>/<lights>/<size>/{z}/{x}/{y}
+    // satv://t/<frame id>/<lut id>/<lights>/<size>/<smooth>/{z}/{x}/{y}
     maplibregl.addProtocol('satv', async (params) => {
       const m = SatMap._active;
-      const [, , , id, lutId, lights, size, z, x, y] = params.url.split('/');
-      const bmp = await m.router.tile(+id, lutId, +z, +x, +y, +size, lights === '1');
+      const [, , , id, lutId, lights, size, smooth, z, x, y] = params.url.split('/');
+      const bmp = await m.router.tile(+id, lutId, +z, +x, +y, +size, lights === '1', smooth === '1');
       return { data: bmp };
     });
     // satdem://d/<frame id>/<ground scale>/{z}/{x}/{y}
@@ -270,8 +271,8 @@ export class SatMap {
   async putFrame(frame) { await this.router.put(frame); }
   dropFrames(frames) { this.router.drop(frames.map((f) => f.id)); }
 
-  async setColour(lutId, lut, kind, vmin, vmax) {
-    await this.router.lut(lutId, lut, kind, vmin, vmax);
+  async setColour(lutId, lut, kind, vmin, vmax, below = null) {
+    await this.router.lut(lutId, lut, kind, vmin, vmax, below);
     if (lutId === this.lutId) return;
     this.lutId = lutId;
     // re-request the shown frame's tiles with the new colours
@@ -279,7 +280,7 @@ export class SatMap {
   }
 
   _tileUrl(f) {
-    return `satv://t/${f.id}/${f.mode === 'band' ? this.lutId : '-'}/${this.lights ? 1 : 0}/${this.tileSize}/{z}/{x}/{y}`;
+    return `satv://t/${f.id}/${f.mode === 'band' ? this.lutId : '-'}/${this.lights ? 1 : 0}/${this.tileSize}/${this.smooth ? 1 : 0}/{z}/{x}/{y}`;
   }
 
   _maxzoom(f) {
@@ -294,7 +295,7 @@ export class SatMap {
     const b = gridBounds(f.grid); if (b) spec.bounds = b;
     map.addSource(id, spec);
     map.addLayer({ id, type: 'raster', source: id,
-      paint: { 'raster-opacity': opacity, 'raster-resampling': 'nearest', 'raster-fade-duration': 0, 'raster-opacity-transition': { duration: 0, delay: 0 } } }, 'sat-anchor');
+      paint: { 'raster-opacity': opacity, 'raster-resampling': this.smooth ? 'linear' : 'nearest', 'raster-fade-duration': 0, 'raster-opacity-transition': { duration: 0, delay: 0 } } }, 'sat-anchor');
     return { id, frame: f, url };
   }
 
@@ -377,6 +378,13 @@ export class SatMap {
   }
 
   setLights(on) { this.lights = on; if (this._shown) this.showFrame(this._shown, { force: true }); }
+  /** Smoothing: tiles blend the satellite pixels bilinearly (and MapLibre scales them linearly). */
+  setSmooth(on) {
+    if (this.smooth === on) return;
+    this.smooth = on;
+    this.cancelPrefetch();
+    if (this._shown) this.showFrame(this._shown, { force: true });
+  }
 
   clearFrames() {
     for (const l of [this.front, this.next, this.pending]) this._removeLayer(l);
@@ -426,7 +434,7 @@ export class SatMap {
   fitBounds(b, o = {}) { this.map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40, duration: 1000, ...o }); }
   probe(f, lon, lat) { return f ? this.router.probe(f.id, lon, lat) : Promise.resolve(null); }
   /** A tile of the shown frame as an ImageBitmap (the 3D view drapes the product over its terrain). */
-  frameTile(f, z, x, y) { return this.router.tile(f.id, this.lutId, z, x, y, this.tileSize, this.lights); }
+  frameTile(f, z, x, y) { return this.router.tile(f.id, this.lutId, z, x, y, this.tileSize, this.lights, this.smooth); }
 }
 
 export { maplibregl, emptyFC };

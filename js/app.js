@@ -1,13 +1,15 @@
 /* Satellite Viewer (static web edition): UI, state, loading and playback on a MapLibre map. */
-import { SATS, products, CMAPS, buildLut, lutCss, rangeFor, SECTOR_NOTES, bandsOf, rolesOf, bandLabel } from './catalog.js';
+import { SATS, products, CMAPS, buildLut, lutCss, rangeFor, SECTOR_NOTES, bandsOf, rolesOf, bandLabel, defaultSector, defaultProduct } from './catalog.js';
 import { plan, scansFor, loadFrame, loadBands, estimateBytes, frameKey } from './scenes.js';
 import { SatMap, unwrapLine } from './map.js';
 import { autoTier, makeTier, lowerTier, FrameWatch } from './perf.js';
 import { outline, gridCenter, resKm, lonlatToRC } from './geo.js';
 import { setProxy, availableScans } from './listing.js';
 import { Volume } from './volume.js';
+import { glmFlashes } from './glm.js';
+import * as OV from './overlays.js';
 // settings, device tier, decode workers and the first frame's download started before the map loaded
-import { SETTINGS_KEY, device, tier, S, readHash, budget, currentPlan, pool, takeEarly } from './boot.js';
+import { SETTINGS_KEY, device, tier, S, readHash, budget, currentPlan, pool, takeEarly, loopFrames } from './boot.js';
 
 const $ = (id) => document.getElementById(id);
 const REFRESH_MS = 60e3;
@@ -33,6 +35,7 @@ if (!device.gl2) {
 const sm = new SatMap($('map'), { tier, theme: S.theme, globe: S.globe, labels: S.labels, camera: S.cam,
   onMove: () => { save(); hashSoon(); } });
 const map = sm.map;
+sm.smooth = !!S.smooth;
 let frameSeq = 0;
 
 // ------------------------------------------------------------------ helpers
@@ -113,8 +116,8 @@ async function reload({ fit = false } = {}) {
   status('Listing scans…');
   let scans;
   try {
-    if (S.archive) scans = sample(await scansFor(p, { end: new Date(S.archive.end), hours: S.archive.hours, signal: cur.ac.signal }), S.nFrames);
-    else scans = await scansFor(p, { limit: S.nFrames, signal: cur.ac.signal });
+    if (S.archive) scans = sample(await scansFor(p, { end: new Date(S.archive.end), hours: S.archive.hours, signal: cur.ac.signal }), loopFrames());
+    else scans = await scansFor(p, { limit: loopFrames(), signal: cur.ac.signal });
   } catch (e) {
     if (token !== cur.token) return;
     status(); toast(`Could not list scans: ${e.message}`); return;
@@ -143,7 +146,8 @@ async function reload({ fit = false } = {}) {
     const f = await getFrame(p, scans[last], 0, (await takeEarly(frameKey(p, scans[last])))?.frame);
     if (token !== cur.token) return;
     await show(last, { blend: false });
-    if (fit || cur.fitted !== `${S.sat}|${S.sector}|${S.bbox}`) { fitTo(f); cur.fitted = `${S.sat}|${S.sector}|${S.bbox}`; }
+    // (a polar slice is somewhere else every time: always go to it)
+    if (fit || f.track || cur.fitted !== `${S.sat}|${S.sector}|${S.bbox}`) { fitTo(f); cur.fitted = `${S.sat}|${S.sector}|${S.bbox}`; }
     perfInfo(f, performance.now() - t0);
   } catch (e) {
     if (token !== cur.token || /aborted/.test(e.message)) return;
@@ -220,21 +224,26 @@ async function show(i, { blend = true } = {}) {
   sm.setNight(f.time);
   updateOutline(f);
   updateLegend(f);
+  updateGlm(f.time);
   vol.frameChanged(() => playing);
   await sm.showFrame(f, { blendMs: ms });
 }
 const showCurrent = () => show(cur.idx, { blend: false });
 
+/** Value range of a frame under a colour table (the Day/Night Band's comes from each slice). */
+const frameRange = (f, cm) => (f.range && !['ir_color', 'ir_rainbow', 'ir_bd', 'wv'].includes(cm) ? f.range : rangeFor(f.sat, f.ref.band, cm));
+
 async function applyColour(f) {
   if (f.mode !== 'band') return;
   const cm = S.cmaps[S.product] || prodInfo().cmap;
-  const [vmin, vmax] = rangeFor(S.sat, f.ref.band, cm);
-  await sm.setColour(`${cm}|${vmin}|${vmax}|${f.ref.kind}`, buildLut(cm, vmin, vmax), f.ref.kind, vmin, vmax);
+  const [vmin, vmax] = frameRange(f, cm), below = CMAPS[cm].below || null;
+  await sm.setColour(`${cm}|${vmin.toFixed(3)}|${vmax.toFixed(3)}|${f.ref.kind}`, buildLut(cm, vmin, vmax), f.ref.kind, vmin, vmax, below);
 }
 
 function updateOutline(f) {
   const feats = [];
-  if (S.outline && f && f.sector !== 'full') { const o = outline(f.grid); if (o) feats.push({ type: 'Feature', properties: { active: true }, geometry: { type: 'LineString', coordinates: unwrapLine(o) } }); }
+  if (S.outline && f && f.track?.length > 1) feats.push({ type: 'Feature', properties: { active: true }, geometry: { type: 'LineString', coordinates: unwrapLine(f.track) } });
+  else if (S.outline && f && f.sector !== 'full') { const o = outline(f.grid); if (o) feats.push({ type: 'Feature', properties: { active: true }, geometry: { type: 'LineString', coordinates: unwrapLine(o) } }); }
   if (S.sector === 'custom' && S.bbox) {
     const [w, s, e, n] = S.bbox;
     feats.push({ type: 'Feature', properties: { active: false }, geometry: { type: 'LineString', coordinates: [[w, s], [e, s], [e, n], [w, n], [w, s]] } });
@@ -245,6 +254,13 @@ function updateOutline(f) {
 function fitTo(f) {
   const sat = satInfo();
   if (S.sector === 'full') { sm.flyTo({ center: [sat.lon, 0], zoom: 1.4, pitch: S.threeD ? 40 : 0, bearing: 0 }); return; }
+  if (f.grid.proj === 'laea') {
+    // a polar slice: its centre, zoomed to its size (a box would wrap around a pole)
+    const km = Math.max(f.grid.nx, f.grid.ny) * Math.abs(f.grid.dx), px = Math.min(innerWidth - (isNarrow() ? 40 : 420), innerHeight - 180);
+    const zoom = Math.max(1.5, Math.min(8, Math.log2((40075 * Math.cos(Math.min(80, Math.abs(f.grid.lat0)) * Math.PI / 180) * px) / (512 * km * 1.15))));
+    sm.flyTo({ center: [f.grid.lon0, Math.max(-80, Math.min(80, f.grid.lat0))], zoom: S.globe ? Math.min(zoom, 4.2) : zoom, pitch: S.threeD ? 40 : 0, bearing: 0 });
+    return;
+  }
   let b;
   if (S.sector === 'custom' && S.bbox) b = S.bbox;
   else {
@@ -321,12 +337,23 @@ function updateLegend(f) {
   const lg = $('legend');
   if (!f || f.mode !== 'band') { lg.classList.add('hidden'); return; }
   const pi = prodInfo(), cm = S.cmaps[S.product] || pi.cmap;
-  const [vmin, vmax] = rangeFor(S.sat, f.ref.band, cm), pct = f.ref.kind === 'refl';
+  const [vmin, vmax] = frameRange(f, cm), kind = f.ref.kind, pct = kind === 'refl';
   $('legendTitle').textContent = `${pi.name} · ${pi.label}`;
   $('legendBar').style.background = lutCss(cm, vmin, vmax);
   const el = $('legendTicks');
   el.classList.toggle('abs', !pct);
-  if (pct) {
+  const at = (v, txt) => { const p = ((v - vmin) / (vmax - vmin)) * 100; return `<span style="left:${p.toFixed(1)}%;transform:translateX(-${p.toFixed(1)}%)">${txt}</span>`; };
+  if (kind === 'logrr') {
+    el.innerHTML = [0.1, 0.5, 2, 6, 16, 60].map((v, i, a) => at(Math.log10(v), `${v}${i === a.length - 1 ? ' mm/h' : ''}`)).join('');
+  } else if (kind === 'tpw') {
+    el.innerHTML = [0, 15, 30, 45, 60, 75].filter((v) => v >= vmin && v <= vmax).map((v) => at(v, `${v}${v === 75 ? ' mm' : ''}`)).join('');
+  } else if (kind === 'lograd') {
+    el.innerHTML = `${at(vmin, 'dim')}${at(vmax, 'bright')}`;
+  } else if (kind === 'mwbt') {
+    const step = vmax - vmin > 100 ? 40 : 20, out = [];
+    for (let v = Math.ceil(vmin / step) * step; v <= vmax + 1e-9; v += step) out.push(at(v, `${v}${v + step > vmax ? ' K' : ''}`));
+    el.innerHTML = out.join('');
+  } else if (pct) {
     const ticks = [];
     for (let i = 0; i <= 4; i++) ticks.push(`${Math.round((vmin + (vmax - vmin) * i / 4) * 100)}%`);
     el.innerHTML = ticks.map((t) => `<span>${t}</span>`).join('');
@@ -358,7 +385,9 @@ async function probeAt(lngLat, sticky) {
     else {
       const bn = bandsOf(f.sat)[r.band], label = `${bandLabel(f.sat, r.band)} ${bn ? bn[1] + ' µm' : ''}`;
       const v = r.value;
-      txt += v !== v ? ` · <b>${label}</b> no data` : ` · <b>${label}</b> ${r.kind === 'refl' ? `${(v * 100).toFixed(1)}%` : `${v.toFixed(1)} K (${(v - 273.15).toFixed(1)} °C)`}`;
+      const fmt = { refl: () => `${(v * 100).toFixed(1)}%`, mwbt: () => `${v.toFixed(1)} K`, tpw: () => `${v.toFixed(1)} mm`,
+        logrr: () => (v <= -1.99 ? 'no rain' : `${(10 ** v).toFixed(v < 0 ? 2 : 1)} mm/h`), lograd: () => `${(10 ** v).toExponential(2)} W/cm²/sr` }[r.kind];
+      txt += v !== v ? ` · <b>${label}</b> no data` : ` · <b>${label}</b> ${fmt ? fmt() : `${v.toFixed(1)} K (${(v - 273.15).toFixed(1)} °C)`}`;
       if (r.rgb) txt += ` <span style="display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;background:rgb(${r.rgb})"></span>`;
     }
   }
@@ -379,6 +408,74 @@ map.on('click', (e) => {
   if (touch || matchMedia('(hover: none)').matches) probeAt(e.lngLat, true);
   if (document.body.classList.contains('panel-open')) togglePanel(false);
 });
+
+// ------------------------------------------------------------------ overlays: lightning, cyclones
+let glmWant = null, glmBusy = false;
+/** GLM flashes of the minutes before a frame's time (while one request runs, the latest wins). */
+function updateGlm(t) {
+  glmWant = S.glm && t ? t : null;
+  if (!S.glm) { OV.setGlm(map, null); $('glmInfo').textContent = ''; return; }
+  if (glmBusy || !glmWant) return;
+  glmBusy = true;
+  (async () => {
+    while (glmWant && S.glm) {
+      const want = glmWant;
+      glmWant = null;
+      try {
+        const d = await glmFlashes(want, S.glmMin, pool);
+        if (!S.glm) break;
+        const n = OV.setGlm(map, d, S.glmMin);
+        $('glmInfo').textContent = d.sats.length ? `${n.toLocaleString()}` : 'none';
+        $('glmInfo').title = d.sats.length ? `${n} flashes from ${d.sats.map((s) => SATS[s]?.name || s).join(' + ')} (${d.files} files)` : 'No GLM data at this time (GLM data starts in 2017)';
+      } catch (e) { console.warn('GLM', e); $('glmInfo').textContent = '—'; }
+    }
+    glmBusy = false;
+    if (!S.glm) OV.setGlm(map, null);
+  })();
+}
+
+let storms = null, stormsT = 0;
+async function loadStorms() {
+  stormsT = Date.now();
+  try {
+    storms = await OV.fetchStorms();
+    if (storms.errors.length) console.warn('cyclones', storms.errors);
+  } catch (e) { console.warn('cyclones', e); storms = { storms: [], fc: null, errors: [e.message] }; }
+  OV.setStorms(map, storms.fc);
+  renderStorms();
+}
+/** Cyclones show in live mode (the agencies publish current storms only). */
+function syncStorms() {
+  const on = S.storms && !S.archive;
+  OV.showLayers(map, 'storms', on);
+  if (on && (!storms || Date.now() - stormsT > 10 * 60e3)) loadStorms();
+  renderStorms();
+}
+function renderStorms() {
+  const el = $('stormList');
+  el.innerHTML = '';
+  const note = (t) => { const d = document.createElement('div'); d.className = 'note'; d.textContent = t; el.appendChild(d); };
+  if (!S.storms) return;
+  if (S.archive) { note('Current storms show in Live mode.'); return; }
+  if (!storms) { note('Loading active storms…'); return; }
+  if (!storms.storms.length) note(storms.errors.length ? 'Storm data unavailable right now.' : 'No active tropical cyclones.');
+  for (const s of storms.storms) {
+    const c = OV.category(s.kt), b = document.createElement('button');
+    b.className = 'storm';
+    b.innerHTML = `<i style="background:${c.color}"></i><span><b></b><small></small></span>`;
+    b.querySelector('b').textContent = s.name;
+    b.querySelector('small').textContent = `${s.agency} · ${s.kt} kt${s.mb ? ` · ${s.mb} mb` : ''} · ${c.label}`;
+    b.onclick = () => { sm.flyTo({ center: s.now, zoom: Math.max(map.getZoom(), 4.5) }); if (innerWidth < 640) togglePanel(false); };
+    el.appendChild(b);
+  }
+}
+setInterval(() => { if (S.storms && !S.archive && !document.hidden) loadStorms(); }, 15 * 60e3);
+
+function addOverlays() {
+  OV.addLayers(map, { font: ['Noto Sans Regular'], before: 'outline' });
+  OV.showLayers(map, 'glm', S.glm);
+  OV.showLayers(map, 'storms', S.storms && !S.archive);
+}
 
 // ------------------------------------------------------------------ custom sector box
 let drawState = null;
@@ -434,6 +531,7 @@ const vol = new Volume({
 async function volumeFields(r, progress = () => {}) {
   const f = byId.get(r.sceneId) || shown;
   if (!f) throw new Error('frame not loaded');
+  if (SATS[f.sat].kind === 'polar') throw new Error('The 3D cloud volume works on geostationary frames (GOES, Himawari, GK2A)');
   const roles = rolesOf(f.sat);
   const want = { ir: roles.ir103, red: roles.red, snow: roles.snow, swir: roles.swir, ir12: roles.ir123 };
   const bandList = [...new Set(Object.values(want))];
@@ -477,7 +575,7 @@ function swatch(p) {
   if (p.kind === 'rgb') {
     const c = { geocolor: '#4b7bd8,#e8e2c8', truecolor: '#3d6fb5,#d9cfa8', natural: '#31a3c9,#e0f0ff', airmass: '#c0362c,#2f5ec4',
       dcp: '#e06ef0,#ffe14a', daycon: '#f0d040,#3050d0', nightmicro: '#e0c0a0,#90a8c8', dust: '#ff40c0,#203040', ash: '#e0f040,#2070c0',
-      fire: '#ff3020,#203010', simplewv: '#f0f0f0,#2050a0', sandwich: '#d8d8d8,#ff4040' }[p.id] || '#999,#333';
+      fire: '#ff3020,#203010', simplewv: '#f0f0f0,#2050a0', sandwich: '#d8d8d8,#ff4040', v_truecolor: '#3d6fb5,#d9cfa8', v_natural: '#31a3c9,#e0f0ff' }[p.id] || '#999,#333';
     return `linear-gradient(135deg, ${c})`;
   }
   const [vmin, vmax] = rangeFor(S.sat, p.band, p.cmap);
@@ -486,6 +584,8 @@ function swatch(p) {
 function buildSats() {
   const el = $('satList'); el.innerHTML = '';
   for (const [id, s] of Object.entries(SATS)) {
+    // legacy satellites only exist in the archive: listed in archive mode only
+    if (s.retired && !S.archive) continue;
     const b = document.createElement('button');
     b.className = `sat-card${id === S.sat ? ' on' : ''}${s.retired ? ' retired' : ''}`;
     b.innerHTML = `<b>${s.name}</b><span>${s.sub}</span>`;
@@ -534,6 +634,7 @@ function buildProducts() {
 }
 function updateEstimates(scan) {
   estimates = {};
+  if (SATS[S.sat].kind === 'polar') { if (cur.plan) estimates[S.product] = estimateBytes(cur.plan, scan); buildProducts(); return; }
   for (const p of prodList()) {
     try {
       const pl = plan({ sat: S.sat, sector: S.sector, product: p.id, resolution: S.resolution, bbox: S.bbox }, budget(p.kind === 'rgb'));
@@ -565,8 +666,8 @@ function buildFrames() {
 function selectSat(id) {
   if (id === S.sat) return;
   S.sat = id;
-  if (!satInfo().sectors.some((s) => s[0] === S.sector)) S.sector = SATS[id].kind === 'goes' ? SATS[id].local : 'full';
-  if (!prodList().some((p) => p.id === S.product)) S.product = 'geocolor';
+  if (!satInfo().sectors.some((s) => s[0] === S.sector)) S.sector = defaultSector(id);
+  if (!prodList().some((p) => p.id === S.product)) S.product = defaultProduct(id);
   // AHI / AMI full disks have no 2 km multi-band file: visible composites are far too heavy there
   if (SATS[id].kind !== 'goes' && S.sector === 'full' && tier.name !== 'high' && ['geocolor', 'truecolor', 'natural', 'dcp', 'daycon', 'sandwich', 'fire'].includes(S.product)) S.product = tier.name === 'low' ? 'b13' : 'airmass';
   if (SATS[id].retired && !S.archive) startArchive(true);
@@ -591,11 +692,13 @@ function selectProduct(id) {
 function syncArchive() {
   const on = !!S.archive;
   $('archiveBar').classList.toggle('hidden', !on);
+  buildSats();
   for (const b of $('modeSeg').children) b.classList.toggle('on', (b.dataset.m === 'archive') === on);
   const sat = satInfo(), inp = $('arcEnd');
   inp.min = `${sat.start}T00:00`;
   inp.max = (sat.end ? new Date(sat.end) : new Date()).toISOString().slice(0, 16);
   if (on) { inp.value = new Date(S.archive.end).toISOString().slice(0, 16); $('arcSpan').value = S.archive.hours; }
+  syncStorms();
   layoutVars();
 }
 function startArchive(silent) {
@@ -606,8 +709,11 @@ function startArchive(silent) {
   if (!silent) { save(); reload(); }
 }
 function stopArchive() {
-  if (satInfo().retired) { toast(`${satInfo().name} is retired — only archive data exists.`, 'info', 4000); return; }
-  S.archive = null; syncArchive(); save(); reload();
+  const sat = satInfo();
+  S.archive = null;
+  // a retired satellite has no live data: going live switches to the satellite that replaced it
+  if (sat.retired) { selectSat(sat.successor); return; }
+  syncArchive(); save(); reload();
 }
 function arcLoad(dir = 0) {
   const v = $('arcEnd').value;
@@ -717,6 +823,12 @@ function bind() {
   chk('outlineChk', 'outline', () => updateOutline(shown));
   chk('nightChk', 'night', (v) => sm.show('night', v));
   chk('lightsChk', 'lights', (v) => sm.setLights(v));
+  chk('smoothChk', 'smooth', (v) => sm.setSmooth(v));
+  chk('glmChk', 'glm', (v) => { OV.showLayers(map, 'glm', v); $('glmRow').classList.toggle('hidden', !v); updateGlm(shown?.time); });
+  $('glmRow').classList.toggle('hidden', !S.glm);
+  $('glmMin').value = S.glmMin;
+  $('glmMin').onchange = (e) => { S.glmMin = +e.target.value; save(); updateGlm(shown?.time); };
+  chk('stormsChk', 'storms', syncStorms);
   chk('labelsChk', 'labels', (v) => sm.setLabels(v));
   chk('globeChk', 'globe', (v) => sm.setProjection(v));
   chk('blendChk', 'blend', () => {});
@@ -773,9 +885,10 @@ function bind() {
 setInterval(async () => {
   if (S.archive || document.hidden || !cur.plan || !cur.scans.length) return;
   try {
-    const scans = (await scansFor(cur.plan, { limit: S.nFrames })).sort((a, b) => a.t - b.t);
-    const newest = scans[scans.length - 1];
-    if (!newest || newest.t <= cur.scans[cur.scans.length - 1].t) return;
+    const scans = (await scansFor(cur.plan, { limit: loopFrames() })).sort((a, b) => a.t - b.t);
+    const newest = scans[scans.length - 1], last = cur.scans[cur.scans.length - 1];
+    const grew = newest && newest.granules && newest.t.getTime() === last.t.getTime() && newest.granules.length > last.granules.length;
+    if (!newest || (newest.t <= last.t && !grew)) return;
     const atEnd = cur.idx === cur.scans.length - 1, shownT = scanAt(cur.idx)?.t;
     cur.scans = scans;
     renderTimeline();
@@ -801,7 +914,8 @@ layoutVars();
 
 // ------------------------------------------------------------------ boot
 bind();
-buildSats(); buildSectors(); buildProducts(); buildCmaps(); buildFrames(); syncArchive();
+if (satInfo().retired && !S.archive) startArchive(true); // a link to a retired satellite opens its archive
+buildSectors(); buildProducts(); buildCmaps(); buildFrames(); syncArchive();
 selectTab(S.tab);
 if (S.panelCollapsed && !isNarrow()) togglePanel(false);
 perfInfo();
@@ -812,10 +926,12 @@ sm.ready.then(() => {
   sm.lights = S.lights;
   if (S.threeD) set3D(true);
   if (S.terrain) setTerrain(true);
+  addOverlays();
 });
 map.on('style.load', () => { // a new base map style: re-apply the overlay switches
   sm.show(['coast', 'boundary-country'], S.borders); sm.show('boundary-state', S.states); sm.show('graticule', S.grat); sm.show('night', S.night);
   if (!S.labels) sm.setLabels(false);
+  addOverlays();
   updateOutline(shown);
 });
 reload({ fit: !S.cam });

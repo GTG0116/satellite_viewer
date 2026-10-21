@@ -36,10 +36,16 @@ const GOES_WEST_SECTORS = [['full', 'Full Disk'], ['pacus', 'PACUS'], ['meso1', 
 const AHI_SECTORS = [['full', 'Full Disk'], ['japan', 'Japan'], ['target', 'Target'], ['custom', 'Custom']];
 const AMI_SECTORS = [['full', 'Full Disk'], ['la', 'Local Area'], ['custom', 'Custom']];
 
+// polar orbiters: a "sector" is the length of the time slice each frame shows
+const POLAR_SECTORS = [['slice2', '2 min'], ['slice5', '5 min'], ['slice10', '10 min'], ['slice20', '20 min']];
+export const SLICE_MIN = { slice2: 2, slice5: 5, slice10: 10, slice20: 20 };
+const SLICE_NOTE = 'Each frame is the strip the satellite scanned in that time';
+
 export const SECTOR_NOTES = {
   full: 'Whole disk · every 10 min', conus: 'Continental US · every 5 min', pacus: 'Pacific US · every 5 min',
   meso1: 'Movable 1000 km box · every minute', meso2: 'Movable 1000 km box · every minute',
   japan: 'Japan area · every 2.5 min', target: 'Movable target · every 2.5 min', la: 'Korea / East Asia 1000 km box · every 2 min', custom: 'Draw a box · only the rows inside are downloaded',
+  slice2: SLICE_NOTE, slice5: SLICE_NOTE, slice10: SLICE_NOTE, slice20: SLICE_NOTE,
 };
 
 export const SATS = {
@@ -47,18 +53,94 @@ export const SATS = {
   goes18: { name: 'GOES-18', sub: 'GOES-West · 137.0°W', kind: 'goes', bucket: 'noaa-goes18', tag: 'G18', lon: -137.0, local: 'pacus', sectors: GOES_WEST_SECTORS, start: '2022-05-11' },
   himawari9: { name: 'Himawari-9', sub: 'Japan · 140.7°E', kind: 'ahi', bucket: 'noaa-himawari9', tag: 'H09', lon: 140.7, sectors: AHI_SECTORS, start: '2022-10-28' },
   gk2a: { name: 'GK2A', sub: 'Korea · 128.2°E', kind: 'ami', bucket: 'noaa-gk2a-pds', tag: 'GK2A', lon: 128.2, sectors: AMI_SECTORS, start: '2023-02-16' },
-  goes16: { name: 'GOES-16', sub: 'GOES-East · 2017–2025', kind: 'goes', bucket: 'noaa-goes16', tag: 'G16', lon: -75.2, local: 'conus', sectors: GOES_EAST_SECTORS, retired: true, start: '2017-02-28', end: '2025-04-07' },
-  goes17: { name: 'GOES-17', sub: 'GOES-West · 2018–2023', kind: 'goes', bucket: 'noaa-goes17', tag: 'G17', lon: -137.2, local: 'pacus', sectors: GOES_WEST_SECTORS, retired: true, start: '2018-08-28', end: '2023-01-10' },
-  himawari8: { name: 'Himawari-8', sub: 'Japan · 2015–2022', kind: 'ahi', bucket: 'noaa-himawari8', tag: 'H08', lon: 140.7, sectors: AHI_SECTORS, retired: true, start: '2015-07-07', end: '2022-12-13' },
+  noaa20: { name: 'NOAA-20', sub: 'Polar · VIIRS + ATMS', kind: 'polar', bucket: 'noaa-nesdis-n20-pds', tag: 'j01', mirs: 'n20', lon: 0, sectors: POLAR_SECTORS, start: '2021-02-01' },
+  noaa21: { name: 'NOAA-21', sub: 'Polar · VIIRS + ATMS', kind: 'polar', bucket: 'noaa-nesdis-n21-pds', tag: 'j02', mirs: 'n21', lon: 0, sectors: POLAR_SECTORS, start: '2023-02-10' },
+  snpp: { name: 'Suomi NPP', sub: 'Polar · VIIRS + ATMS', kind: 'polar', bucket: 'noaa-nesdis-snpp-pds', tag: 'npp', mirs: 'npp', lon: 0, sectors: POLAR_SECTORS, start: '2022-08-01' },
+  goes16: { name: 'GOES-16', sub: 'GOES-East · 2017–2025', kind: 'goes', bucket: 'noaa-goes16', tag: 'G16', lon: -75.2, local: 'conus', sectors: GOES_EAST_SECTORS, retired: true, successor: 'goes19', start: '2017-02-28', end: '2025-04-07' },
+  goes17: { name: 'GOES-17', sub: 'GOES-West · 2018–2023', kind: 'goes', bucket: 'noaa-goes17', tag: 'G17', lon: -137.2, local: 'pacus', sectors: GOES_WEST_SECTORS, retired: true, successor: 'goes18', start: '2018-08-28', end: '2023-01-10' },
+  himawari8: { name: 'Himawari-8', sub: 'Japan · 2015–2022', kind: 'ahi', bucket: 'noaa-himawari8', tag: 'H08', lon: 140.7, sectors: AHI_SECTORS, retired: true, successor: 'himawari9', start: '2015-07-07', end: '2022-12-13' },
 };
 
-export const bandsOf = (sat) => ({ goes: GOES_BANDS, ahi: AHI_BANDS, ami: AMI_BANDS })[SATS[sat].kind];
-export const rolesOf = (sat) => ({ goes: GOES_ROLE, ahi: AHI_ROLE, ami: AMI_ROLE })[SATS[sat].kind];
-/** Short band name as the instrument calls it: C13 (ABI), B13 (AHI), IR105 (AMI). */
+export const bandsOf = (sat) => ({ goes: GOES_BANDS, ahi: AHI_BANDS, ami: AMI_BANDS, polar: {} })[SATS[sat].kind];
+export const rolesOf = (sat) => ({ goes: GOES_ROLE, ahi: AHI_ROLE, ami: AMI_ROLE, polar: {} })[SATS[sat].kind];
+export const defaultSector = (sat) => (SATS[sat].kind === 'goes' ? SATS[sat].local : SATS[sat].kind === 'polar' ? 'slice5' : 'full');
+export const defaultProduct = (sat) => (SATS[sat].kind === 'polar' ? 'i5' : 'geocolor');
+/** Short band name as the instrument calls it: C13 (ABI), B13 (AHI), IR105 (AMI), I5 / Ch 16 (polar). */
 export const bandLabel = (sat, b) => {
   const k = SATS[sat].kind;
+  if (k === 'polar') return VIIRS[b]?.[0] || (ATMS_PRODUCTS[b] ? ATMS_PRODUCTS[b].short : String(b));
   return k === 'ami' ? AMI_CHANNELS[b] : `${k === 'goes' ? 'C' : 'B'}${String(b).padStart(2, '0')}`;
 };
+
+// ------------------------------------------------------------------ polar orbiters (VIIRS + ATMS)
+// VIIRS: id -> [label, µm, 'vis' | 'ir' | 'dnb', folder, file token, dataset group, geolocation, native km]
+export const VIIRS = {};
+[[0.64, 'vis'], [0.865, 'vis'], [1.61, 'vis'], [3.74, 'ir'], [11.45, 'ir']].forEach(([wl, k], i) => {
+  VIIRS[`i${i + 1}`] = [`I${i + 1}`, wl, k, `VIIRS-I${i + 1}-SDR`, `SVI0${i + 1}`, `VIIRS-I${i + 1}-SDR_All`, 'I', 0.375];
+});
+[[0.412, 'vis'], [0.445, 'vis'], [0.488, 'vis'], [0.555, 'vis'], [0.672, 'vis'], [0.746, 'vis'], [0.865, 'vis'], [1.24, 'vis'],
+  [1.378, 'vis'], [1.61, 'vis'], [2.25, 'vis'], [3.7, 'ir'], [4.05, 'ir'], [8.55, 'ir'], [10.763, 'ir'], [12.013, 'ir']].forEach(([wl, k], i) => {
+  VIIRS[`m${i + 1}`] = [`M${i + 1}`, wl, k, `VIIRS-M${i + 1}-SDR`, `SVM${String(i + 1).padStart(2, '0')}`, `VIIRS-M${i + 1}-SDR_All`, 'M', 0.75];
+});
+VIIRS.dnb = ['DNB', 0.7, 'dnb', 'VIIRS-DNB-SDR', 'SVDNB', 'VIIRS-DNB-SDR_All', 'D', 0.75];
+// geolocation: [folder, file token, dataset group]; I bands use the 750 m GMTCO when it exists
+// (NODD keeps it ~3 months), else their own 375 m GITCO
+export const VIIRS_GEO = { M: ['VIIRS-MOD-GEO-TC', 'GMTCO', 'VIIRS-MOD-GEO-TC_All'], I: ['VIIRS-IMG-GEO-TC', 'GITCO', 'VIIRS-IMG-GEO-TC_All'],
+  D: ['VIIRS-DNB-GEO', 'GDNBO', 'VIIRS-DNB-GEO_All'] };
+const VIIRS_DESC = { i1: 'Visible red', i2: 'Near-IR vegetation', i3: 'Snow/ice', i4: 'Shortwave IR (fire, fog)', i5: 'Longwave IR window',
+  m1: 'Violet (aerosol)', m2: 'Deep blue', m3: 'Blue', m4: 'Green', m5: 'Red', m6: 'Atmospheric correction', m7: 'Near-IR vegetation',
+  m8: 'Cloud particle size', m9: 'Cirrus', m10: 'Snow/ice', m11: 'Cloud particle size', m12: 'Shortwave IR window', m13: 'Fire / shortwave IR',
+  m14: 'Cloud-top phase', m15: 'Longwave IR window', m16: '"Dirty" longwave IR', dnb: 'Day/Night Band (moonlight, city lights)' };
+export const VIIRS_RGBS = {
+  v_truecolor: { name: 'True Color', bands: ['m5', 'm4', 'm3'], desc: 'M5 / M4 / M3 reflectance, 750 m' },
+  v_natural: { name: 'Natural Color', bands: ['i3', 'i2', 'i1'], desc: 'I3 / I2 / I1 reflectance, 375 m' },
+};
+const VIIRS_RANGE = { i3: [0, 0.8], m9: [0, 0.4], m10: [0, 0.8], m11: [0, 0.6], i4: [200, 340], m12: [200, 340], m13: [200, 340], m14: [180, 320] };
+// ATMS channels (MiRS IMG files): [frequency, polarisation, default range K, colour table, what it shows]
+export const ATMS_CH = [
+  ['23.8 GHz', 'QV', [150, 290], 'turbo', 'Water vapour / surface'], ['31.4 GHz', 'QV', [140, 290], 'turbo', 'Window: cloud liquid water, surface'],
+  ['50.3 GHz', 'QH', [180, 280], 'turbo', 'Surface / lower troposphere'], ['51.76 GHz', 'QH', [205, 275], 'turbo', 'Lower troposphere temperature'],
+  ['52.8 GHz', 'QH', [215, 265], 'turbo', 'Lower troposphere temperature (~1 km)'], ['53.596±0.115 GHz', 'QH', [215, 255], 'turbo', 'Temperature ~4 km'],
+  ['54.4 GHz', 'QH', [205, 245], 'turbo', 'Temperature ~7 km'], ['54.94 GHz', 'QH', [200, 235], 'turbo', 'Temperature ~10 km'],
+  ['55.5 GHz', 'QH', [195, 230], 'turbo', 'Temperature ~13 km (tropopause)'], ['57.29 GHz (fo)', 'QH', [195, 235], 'turbo', 'Temperature ~17 km'],
+  ['fo±0.217 GHz', 'QH', [195, 235], 'turbo', 'Temperature ~20 km'], ['fo±0.322±0.048 GHz', 'QH', [200, 240], 'turbo', 'Temperature ~25 km'],
+  ['fo±0.322±0.022 GHz', 'QH', [205, 250], 'turbo', 'Temperature ~30 km'], ['fo±0.322±0.010 GHz', 'QH', [210, 260], 'turbo', 'Temperature ~35 km'],
+  ['fo±0.322±0.0045 GHz', 'QH', [215, 270], 'turbo', 'Temperature ~40 km'], ['88.2 GHz', 'QV', [150, 295], 'mw_scatter', 'Window: ice scattering in convection'],
+  ['165.5 GHz', 'QH', [130, 290], 'mw_scatter', 'Window: ice scattering, moisture'], ['183.31±7.0 GHz', 'QH', [150, 285], 'mw_scatter', 'Water vapour, lower troposphere'],
+  ['183.31±4.5 GHz', 'QH', [160, 280], 'mw_scatter', 'Water vapour ~3 km'], ['183.31±3.0 GHz', 'QH', [170, 275], 'mw_scatter', 'Water vapour ~5 km'],
+  ['183.31±1.8 GHz', 'QH', [180, 270], 'mw_scatter', 'Water vapour ~6 km'], ['183.31±1.0 GHz', 'QH', [190, 265], 'mw_scatter', 'Water vapour ~8 km (upper)'],
+];
+export const ATMS_PRODUCTS = { rr: { short: 'Rain', q: 'logrr' }, tpw: { short: 'TPW', q: 'tpw' } };
+ATMS_CH.forEach((c, i) => { ATMS_PRODUCTS[`ch${String(i + 1).padStart(2, '0')}`] = { short: `Ch ${i + 1}`, q: 'mwbt', ch: i }; });
+
+/** What a polar product reads: {family: 'viirs' | 'atms', bands, q (storage kind), km (native)}. */
+export function polarSource(product) {
+  if (VIIRS_RGBS[product]) return { family: 'viirs', bands: VIIRS_RGBS[product].bands, q: 'refl', km: VIIRS[VIIRS_RGBS[product].bands[0]][7], rgb: true };
+  if (VIIRS[product]) { const v = VIIRS[product]; return { family: 'viirs', bands: [product], q: v[2] === 'ir' ? 'bt' : v[2] === 'dnb' ? 'lograd' : 'refl', km: v[7] }; }
+  if (ATMS_PRODUCTS[product]) return { family: 'atms', bands: [product], q: ATMS_PRODUCTS[product].q, km: 4, ch: ATMS_PRODUCTS[product].ch };
+  throw new Error(`unknown product ${product}`);
+}
+
+function polarProducts() {
+  const out = [];
+  for (const [id, r] of Object.entries(VIIRS_RGBS)) out.push({ id, name: r.name, group: 'RGB', desc: r.desc, kind: 'rgb' });
+  const km = (v) => (v[7] < 0.5 ? '375 m' : '750 m');
+  const vis = [], ir = [];
+  for (const [id, v] of Object.entries(VIIRS)) {
+    const p = { id, band: id, name: v[2] === 'dnb' ? 'DNB · Day/Night Band' : `${v[0]} · ${v[1]} µm`, label: VIIRS_DESC[id], desc: km(v), kind: v[2] === 'ir' ? 'ir' : 'vis' };
+    if (v[2] === 'ir') ir.push({ ...p, group: 'Infrared', cmaps: IR_CMAPS, cmap: ['i5', 'm15', 'm16'].includes(id) ? 'ir_color' : 'ir_gray' });
+    else vis.push({ ...p, group: 'Visible', cmaps: VIS_CMAPS, cmap: ['m9', 'm10', 'm11', 'i3', 'dnb'].includes(id) ? 'gray' : 'vis' });
+  }
+  const mw = [
+    { id: 'rr', band: 'rr', name: 'Rain rate', label: 'MiRS (ATMS)', desc: 'mm/h, 16–50 km footprints', kind: 'rr', group: 'Microwave', cmaps: ['precip'], cmap: 'precip' },
+    { id: 'tpw', band: 'tpw', name: 'Precipitable water', label: 'MiRS (ATMS)', desc: 'total column, mm', kind: 'tpw', group: 'Microwave', cmaps: ['tpw', 'turbo'], cmap: 'tpw' },
+  ];
+  ATMS_CH.forEach(([f, pol, , cm, d], i) => {
+    const id = `ch${String(i + 1).padStart(2, '0')}`;
+    mw.push({ id, band: id, name: `Ch ${i + 1} · ${f}`, label: `${pol} · ATMS`, desc: d, kind: 'mw', group: 'Microwave', cmaps: ['turbo', 'mw_scatter', 'ir_gray', 'gray'], cmap: cm });
+  });
+  return out.concat(vis, ir, mw);
+}
 export const bandRes = (sat, b) => bandsOf(sat)[b][3];
 
 // RGB composites: roles ('?' = optional) ; the reference role drives 3D heights and probing
@@ -77,8 +159,9 @@ export const RGBS = {
   simplewv: { name: 'Simple Water Vapor', roles: ['ir103', 'wv_upper', 'wv_low'], ref: 'ir103', desc: 'Moisture at three levels' },
 };
 
-// value ranges of 16-bit storage codes (code 65535 = no data)
-export const Q16 = { refl: [-0.25, 2.0], bt: [150, 420] };
+// value ranges of 16-bit storage codes (code 65535 = no data). Polar products add microwave
+// brightness temperatures, log10 rain rate (mm/h), precipitable water (mm) and log10 DNB radiance.
+export const Q16 = { refl: [-0.25, 2.0], bt: [150, 420], mwbt: [60, 340], logrr: [-2, 2.5], tpw: [0, 100], lograd: [-13, 1] };
 export const NAN_CODE = 65535;
 export const kindForBand = (b) => (b <= 6 ? 'refl' : 'bt');
 
@@ -107,6 +190,14 @@ export function cmapFor(sat, b) {
 export function rangeFor(sat, b, cmap) {
   if (FIXED_RANGE[cmap]) return FIXED_RANGE[cmap];
   const k = SATS[sat].kind;
+  if (k === 'polar') {
+    // b: the product id (DNB ranges come from each frame, see app.js)
+    if (b === 'rr') return [Math.log10(0.1), Math.log10(60)];
+    if (b === 'tpw') return [0, 75];
+    if (ATMS_PRODUCTS[b]) return ATMS_CH[ATMS_PRODUCTS[b].ch][2];
+    if (b === 'dnb') return [-10, -7];
+    return VIIRS_RANGE[b] || (VIIRS[b] && VIIRS[b][2] === 'ir' ? [180, 320] : [0, 1.1]);
+  }
   if (k !== 'goes' && b <= 4) return [0, 1.1];
   if (k === 'ami' && (b === 5 || b === 6)) return b === 5 ? [0, 0.5] : [0, 0.8];
   return BAND_RANGE[b];
@@ -114,6 +205,7 @@ export function rangeFor(sat, b, cmap) {
 
 /** Products of a satellite: RGB composites then single bands. */
 export function products(sat) {
+  if (SATS[sat].kind === 'polar') return polarProducts();
   const roles = rolesOf(sat), bands = bandsOf(sat);
   const out = [];
   for (const [id, r] of Object.entries(RGBS)) {
@@ -151,7 +243,9 @@ export function bandsFor(sat, product) {
 export const CMAPS = {
   vis: { label: 'Grayscale (sqrt)' }, gray: { label: 'Grayscale (linear)' }, ir_gray: { label: 'IR grayscale' },
   ir_color: { label: 'Clean IR (colour)' }, ir_rainbow: { label: 'IR rainbow' }, ir_bd: { label: 'Dvorak BD' },
-  wv: { label: 'Water vapour' }, turbo: { label: 'Turbo' },
+  wv: { label: 'Water vapour' }, turbo: { label: 'Turbo' }, mw_scatter: { label: 'Microwave scattering' },
+  // values below the table (no rain) get their own colour: a faint veil that shows the swath
+  precip: { label: 'Precipitation', below: [14, 22, 34, 70] }, tpw: { label: 'Precipitable water' },
 };
 
 function grayStops(lo, hi, invert = false, gamma = 1, n = 32) {
@@ -199,6 +293,15 @@ const STOPS = {
       '#fe9b2d', '#f36315', '#d93806', '#b11901', '#7a0402'];
     return c.map((h, i) => [lo + (hi - lo) * i / (c.length - 1), hex(h)]);
   },
+  // 89 / 165 GHz style: deep convection (cold) red / yellow, warm background blue / grey
+  mw_scatter: (lo, hi) => {
+    const c = ['#5b0011', '#c1121f', '#ff5d00', '#ffb000', '#fff200', '#9ef01a', '#21c45d', '#0e9aa7', '#2d6cdf', '#5560c8', '#8a8fb0', '#c8c8d8', '#ffffff'];
+    return c.map((h, i) => [lo + (hi - lo) * i / (c.length - 1), hex(h)]);
+  },
+  precip: () => H([[0.1, '#3b5bdb'], [0.5, '#1c7ed6'], [1, '#15aabf'], [2, '#2fb344'], [4, '#94d82d'], [6, '#fcc419'], [10, '#fd7e14'],
+    [16, '#f03e3e'], [25, '#c2255c'], [40, '#ae3ec9'], [60, '#f8d7ff']].map(([v, c]) => [Math.log10(v), c])),
+  tpw: () => H([[0, '#4a2f1a'], [8, '#a0662b'], [16, '#e0b56a'], [24, '#d8f0a8'], [32, '#4cc06a'], [40, '#1c9aa8'], [48, '#2554c7'],
+    [56, '#5b2bb5'], [64, '#c43fc7'], [75, '#ffd6ff']]),
 };
 
 export const LUT_N = 1024;

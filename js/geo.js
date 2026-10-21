@@ -2,6 +2,7 @@
  * decode workers and the renderer. A grid maps pixel centres to scan angles
  *   x = x0 + col * dx,   y = y0 + row * dy   (radians, y positive north)
  * and every image <-> lon/lat mapping is exact nearest-pixel lookup through this model.
+ * Polar-orbiter slices use the same row / column form on a local equal-area grid (proj 'laea').
  */
 
 const D2R = Math.PI / 180, R2D = 180 / Math.PI;
@@ -21,11 +22,57 @@ export function refine(g, f) {
   return { ...g, x0: g.x0 - g.dx / 2 + ndx / 2, dx: ndx, y0: g.y0 - g.dy / 2 + ndy / 2, dy: ndy, ny: g.ny * f, nx: g.nx * f };
 }
 
-export const resKm = (g) => Math.abs(g.dx) * (g.H - g.req) / 1000;
-export const gridKey = (g) => [g.lon0, g.x0, g.dx, g.y0, g.dy, g.ny, g.nx].map((v) => +(+v).toPrecision(9)).join(',');
+export const resKm = (g) => (g.proj === 'laea' ? Math.abs(g.dx) : Math.abs(g.dx) * (g.H - g.req) / 1000);
+export const gridKey = (g) => [g.lon0, g.lat0 || 0, g.rs || 0, g.x0, g.dx, g.y0, g.dy, g.ny, g.nx].map((v) => +(+v).toPrecision(9)).join(',');
+
+// ------------------------------------------------------------------ polar swaths
+// Polar-orbiter slices are resampled (nearest swath pixel) onto a Lambert azimuthal equal-area
+// grid centred on the slice: {proj: 'laea', lon0, lat0, rc, rs, x0, dx, y0, dy, nx, ny}, x / y in
+// km, the axes turned (rc, rs: cos, sin) so columns run along the ground track and the grid hugs
+// the swath. One formula works at any latitude, poles included.
+const R_EARTH = 6371.0072;
+
+/** Lon/lat (deg) -> LAEA x / y (km) about (lon0, lat0); null at the antipode. */
+export function laeaXY(lon0, lat0, lon, lat, out = [0, 0]) {
+  const p0 = lat0 * D2R, p = lat * D2R, dl = (lon - lon0) * D2R;
+  const sp0 = Math.sin(p0), cp0 = Math.cos(p0), sp = Math.sin(p), cp = Math.cos(p), cdl = Math.cos(dl);
+  const d = 1 + sp0 * sp + cp0 * cp * cdl;
+  if (d < 1e-9) return null;
+  const k = R_EARTH * Math.sqrt(2 / d);
+  out[0] = k * cp * Math.sin(dl);
+  out[1] = k * (cp0 * sp - sp0 * cp * cdl);
+  return out;
+}
+
+/** Turn of the grid axes that lines the ground track (first to last nadir point [lon, lat]) up
+ *  with the grid's rows: {rc, rs} = cos / sin of the turn. */
+export function trackTurn(lon0, lat0, nadir) {
+  const a = [0, 0], b = [0, 0];
+  if (nadir.length < 2 || !laeaXY(lon0, lat0, nadir[0][0], nadir[0][1], a) || !laeaXY(lon0, lat0, nadir[nadir.length - 1][0], nadir[nadir.length - 1][1], b)) return { rc: 1, rs: 0 };
+  const tx = b[0] - a[0], ty = b[1] - a[1], n = Math.hypot(tx, ty);
+  return n > 0 ? { rc: ty / n, rs: tx / n } : { rc: 1, rs: 0 };
+}
+
+function laeaLonLat(g, x, y, out) {
+  const rho = Math.hypot(x, y);
+  if (rho > 2 * R_EARTH) return null;
+  const p0 = g.lat0 * D2R;
+  if (rho < 1e-9) { out[0] = g.lon0; out[1] = g.lat0; return out; }
+  const c = 2 * Math.asin(rho / (2 * R_EARTH)), sc = Math.sin(c), cc = Math.cos(c);
+  const lat = Math.asin(Math.max(-1, Math.min(1, cc * Math.sin(p0) + (y * sc * Math.cos(p0)) / rho)));
+  const lon = g.lon0 + Math.atan2(x * sc, rho * Math.cos(p0) * cc - y * Math.sin(p0) * sc) * R2D;
+  out[0] = ((lon + 180) % 360 + 360) % 360 - 180; out[1] = lat * R2D;
+  return out;
+}
 
 /** lon/lat (deg) -> scan angles; returns null when the point is not visible from the satellite. */
 export function lonlatToXY(g, lon, lat, out = [0, 0]) {
+  if (g.proj === 'laea') {
+    if (!laeaXY(g.lon0, g.lat0, lon, lat, out)) return null;
+    // grid axes turned to follow the ground track (rc / rs: cos / sin of the turn)
+    if (g.rs) { const x = out[0], y = out[1]; out[0] = x * g.rc - y * g.rs; out[1] = x * g.rs + y * g.rc; }
+    return out;
+  }
   const req2 = g.req * g.req, rpol2 = g.rpol * g.rpol;
   const e2 = (req2 - rpol2) / req2;
   const phic = Math.atan(rpol2 / req2 * Math.tan(lat * D2R));
@@ -58,6 +105,7 @@ export function lonlatToRC(g, lon, lat, out = [0, 0]) {
 /** Scan angles -> lon/lat (deg). With clampLimb, rays missing the earth return the limb point
  *  along the same direction (used for mesh vertices just off the disk); else null. */
 export function xyToLonLat(g, x, y, out = [0, 0], clampLimb = false) {
+  if (g.proj === 'laea') return g.rs ? laeaLonLat(g, x * g.rc + y * g.rs, y * g.rc - x * g.rs, out) : laeaLonLat(g, x, y, out);
   const k = (g.req * g.req) / (g.rpol * g.rpol);
   let d1, de, dn;
   const cx = Math.cos(x), cy = Math.cos(y), sx = Math.sin(x), sy = Math.sin(y);

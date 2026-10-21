@@ -1,8 +1,9 @@
 /* Tile worker: holds decoded frames and renders, on demand, the web-mercator tiles MapLibre asks
  * for through the satv:// protocol.
  *
- *   tile   colour tile: every output pixel takes the single nearest satellite pixel (no smoothing);
- *          band values go through a 64k code -> RGBA table, composites are copied
+ *   tile   colour tile: every output pixel takes the single nearest satellite pixel, or with
+ *          smoothing on a bilinear blend of the four around it; band values go through a 64k
+ *          code -> RGBA table, composites are copied (or blended per channel)
  *   dem    terrain-RGB height tile: cloud-top height from the frame's reference band
  *          (optionally stacked on real ground elevation) for MapLibre 3D terrain
  *   probe  values under a lon/lat
@@ -18,22 +19,23 @@ const groundCache = new Map();
 // Tile -> frame pixel indices, shared by every frame on the same grid: a loop over a fixed sector
 // (full disk, CONUS, Japan, a custom box ...) navigates each map tile once instead of once per
 // frame, so playback only copies pixels. Bounded by bytes (Int32 per tile pixel).
-const indexCache = new Map(); // key -> Int32Array | null (no coverage)
+const indexCache = new Map(); // key -> Int32Array | {idx, fr, fc} (smooth) | null (no coverage)
 let indexBytes = 0, indexMax = 32e6;
-function cachedIndex(g, w, h, z, x, y, size) {
-  const k = `${gridKey(g)}|${w}|${h}|${z}/${x}/${y}/${size}`;
+const idxBytes = (v) => (!v ? 0 : v.idx ? v.idx.byteLength * 1.5 : v.byteLength);
+function cachedIndex(g, w, h, z, x, y, size, smooth = false) {
+  const k = `${gridKey(g)}|${w}|${h}|${z}/${x}/${y}/${size}${smooth ? '|s' : ''}`;
   if (indexCache.has(k)) {
     const v = indexCache.get(k);
     indexCache.delete(k); indexCache.set(k, v); // most recently used last
     return v;
   }
-  const v = tileIndex(g, w, h, z, x, y, size);
+  const v = tileIndex(g, w, h, z, x, y, size, smooth);
   indexCache.set(k, v);
-  indexBytes += v ? v.byteLength : 0;
+  indexBytes += idxBytes(v);
   for (const [ok, ov] of indexCache) {
     if (indexBytes <= indexMax) break;
     indexCache.delete(ok);
-    indexBytes -= ov ? ov.byteLength : 0;
+    indexBytes -= idxBytes(ov);
   }
   return v;
 }
@@ -43,8 +45,10 @@ const tileLon = (x, z) => (x / 2 ** z) * 360 - 180;
 const tileLat = (y, z) => { const n = PI - (2 * PI * y) / 2 ** z; return (180 / PI) * Math.atan(Math.sinh(n)); };
 
 /** For every pixel of a z/x/y tile of `size`: index into the frame grid (or -1). Navigation is
- *  exact on an 8 px lattice and linear inside a cell; cells touching the disk edge are exact. */
-function tileIndex(g, w, h, z, x, y, size) {
+ *  exact on an 8 px lattice and linear inside a cell; cells touching the disk edge are exact.
+ *  smooth: {idx, fr, fc} instead, idx the upper-left of the 2x2 pixels around the point and
+ *  fr / fc its offsets toward the next row / column (0..255). */
+function tileIndex(g, w, h, z, x, y, size, smooth = false) {
   const STEP = 8, n = size / STEP + 1;
   const lr = new Float64Array(n * n), lc = new Float64Array(n * n), ok = new Uint8Array(n * n);
   const o = [0, 0];
@@ -59,6 +63,8 @@ function tileIndex(g, w, h, z, x, y, size) {
   }
   if (!any) return null;
   const idx = new Int32Array(size * size).fill(-1);
+  const fr = smooth ? new Uint8Array(size * size) : null, fc = smooth ? new Uint8Array(size * size) : null;
+  const rMax = Math.max(0, h - 2), cMax = Math.max(0, w - 2);
   let hit = false;
   for (let cj = 0; cj < n - 1; cj++) for (let ci = 0; ci < n - 1; ci++) {
     const k00 = cj * n + ci, k01 = k00 + 1, k10 = k00 + n, k11 = k10 + 1;
@@ -86,21 +92,64 @@ function tileIndex(g, w, h, z, x, y, size) {
         }
         const ri = Math.round(r), ci2 = Math.round(c);
         if (ri < 0 || ci2 < 0 || ri >= h || ci2 >= w) continue;
-        idx[py * size + px] = ri * w + ci2;
+        const k = py * size + px;
+        if (smooth) {
+          // pixel centres sit on integer coordinates: blend the 2x2 block around (r, c)
+          const r0 = Math.min(rMax, Math.max(0, Math.floor(r))), c0 = Math.min(cMax, Math.max(0, Math.floor(c)));
+          idx[k] = r0 * w + c0;
+          fr[k] = Math.max(0, Math.min(255, Math.round((r - r0) * 255)));
+          fc[k] = Math.max(0, Math.min(255, Math.round((c - c0) * 255)));
+        } else idx[k] = ri * w + ci2;
         hit = true;
       }
     }
   }
-  return hit ? idx : null;
+  if (!hit) return null;
+  return smooth ? { idx, fr, fc } : idx;
 }
 
-function codeTable(lut, kind, vmin, vmax) {
+/** Band codes of a tile, blended bilinearly between the four pixels around each point (codes
+ *  are linear in the value); next to a no-data pixel the nearest of the four is kept. */
+function smoothBand(o32, ix, c, w, h, t) {
+  const { idx, fr, fc } = ix, dr = h > 1 ? w : 0, dc = w > 1 ? 1 : 0;
+  for (let i = 0; i < idx.length; i++) {
+    const k = idx[i];
+    if (k < 0) continue;
+    const a = c[k], b = c[k + dc], d = c[k + dr], e = c[k + dr + dc], u = fc[i], v = fr[i];
+    if (a === NAN_CODE || b === NAN_CODE || d === NAN_CODE || e === NAN_CODE) {
+      o32[i] = t[v < 128 ? (u < 128 ? a : b) : (u < 128 ? d : e)];
+      continue;
+    }
+    const top = a * (255 - u) + b * u, bot = d * (255 - u) + e * u;
+    o32[i] = t[((top * (255 - v) + bot * v) / 65025 + 0.5) | 0];
+  }
+}
+
+/** RGBA of a composite tile, each channel (alpha too) blended bilinearly. */
+function smoothRgba(out, ix, src, w, h) {
+  const { idx, fr, fc } = ix, dr = (h > 1 ? w : 0) * 4, dc = w > 1 ? 4 : 0;
+  for (let i = 0, o = 0; i < idx.length; i++, o += 4) {
+    if (idx[i] < 0) continue;
+    const k = idx[i] * 4, u = fc[i], v = fr[i], u1 = 255 - u, v1 = 255 - v;
+    for (let ch = 0; ch < 4; ch++) {
+      const p = k + ch;
+      const top = src[p] * u1 + src[p + dc] * u, bot = src[p + dr] * u1 + src[p + dr + dc] * u;
+      out[o + ch] = (top * v1 + bot * v) / 65025 + 0.5;
+    }
+  }
+}
+
+/** below: RGBA for values under vmin (e.g. no rain), else they take the table's first colour. */
+function codeTable(lut, kind, vmin, vmax, below) {
   const [lo, hi] = Q16[kind], s = (hi - lo) / 65534;
   const t = new Uint32Array(65536);
   const l32 = new Uint32Array(lut.buffer, lut.byteOffset, 1024);
   const k = 1023 / (vmax - vmin);
+  const b32 = below ? new Uint32Array(new Uint8Array(below).buffer)[0] : 0;
   for (let c = 0; c < 65535; c++) {
-    let i = ((c * s + lo - vmin) * k + 0.5) | 0;
+    const v = c * s + lo;
+    if (below && v < vmin) { t[c] = b32; continue; }
+    let i = ((v - vmin) * k + 0.5) | 0;
     i = i < 0 ? 0 : i > 1023 ? 1023 : i;
     t[c] = l32[i];
   }
@@ -126,7 +175,10 @@ function heightKm(f) {
     if (c === NAN_CODE) return 0;
     const v = c * cs + lo;
     if (r.kind === 'bt') return v >= flat ? 0 : Math.min(18, (flat - v) / (flat - 190) * 16);
-    return Math.max(0, Math.min(1.2, v)) * 9;
+    if (r.kind === 'refl') return Math.max(0, Math.min(1.2, v)) * 9;
+    // microwave (cold = scattering = tall), rain, water vapour, DNB: by position in the range
+    const fr = (v - lo) / (hi - lo);
+    return (r.kind === 'mwbt' ? 1 - fr : fr) * 12;
   };
 }
 
@@ -211,6 +263,7 @@ async function buildTileLights(z, x, y, size) {
 
 async function addLightsMasked(out, idx, z, x, y, size) {
   const L = await tileLights(z, x, y, size);
+  if (idx.idx) idx = idx.idx; // smooth index: its -1 entries mark the same pixels
   for (let i = 0, o = 0; i < idx.length; i++, o += 4) {
     const a = out[o + 3];
     if (a === 255 || idx[i] < 0 || !L[o + 3]) continue;
@@ -248,24 +301,33 @@ const TASKS = {
   config({ cacheMB }) { if (cacheMB) { indexMax = cacheMB * 1e6; tileLightMax = cacheMB * 0.5e6; } return { result: true }; },
   put({ id, frame }) { frames.set(id, frame); return { result: true }; },
   drop({ ids }) { for (const id of ids) frames.delete(id); return { result: true }; },
-  lut({ id, lut, kind, vmin, vmax }) { tables.set(id, codeTable(lut, kind, vmin, vmax)); if (tables.size > 24) tables.delete(tables.keys().next().value); return { result: true }; },
+  lut({ id, lut, kind, vmin, vmax, below }) { tables.set(id, codeTable(lut, kind, vmin, vmax, below)); if (tables.size > 24) tables.delete(tables.keys().next().value); return { result: true }; },
 
-  async tile({ id, lutId, z, x, y, size, lights }) {
+  async tile({ id, lutId, z, x, y, size, lights, smooth }) {
     const f = frames.get(id);
     const out = new Uint8Array(size * size * 4);
     if (f) {
-      const idx = cachedIndex(f.grid, f.w, f.h, z, x, y, size);
+      const idx = cachedIndex(f.grid, f.w, f.h, z, x, y, size, smooth);
       if (idx) {
         const o32 = new Uint32Array(out.buffer);
         if (f.mode === 'band') {
           const t = tables.get(lutId), c = f.ref.codes;
-          if (t) for (let i = 0; i < idx.length; i++) { const k = idx[i]; if (k >= 0) o32[i] = t[c[k]]; }
+          if (t && smooth) smoothBand(o32, idx, c, f.w, f.h, t);
+          else if (t) for (let i = 0; i < idx.length; i++) { const k = idx[i]; if (k >= 0) o32[i] = t[c[k]]; }
+        } else if (smooth) {
+          smoothRgba(out, idx, f.rgba, f.w, f.h);
+          if (lights && f.lights) await addLightsMasked(out, idx, z, x, y, size);
         } else {
           const s32 = new Uint32Array(f.rgba.buffer, f.rgba.byteOffset, f.w * f.h);
           for (let i = 0; i < idx.length; i++) { const k = idx[i]; if (k >= 0) o32[i] = s32[k]; }
           // only pixels inside the image get lights (GeoColor's own night alpha decides how much)
           if (lights && f.lights) await addLightsMasked(out, idx, z, x, y, size);
         }
+        // the globe fills its pole caps (past 85°) by stretching the world's edge row of pixels:
+        // keep that row clear, or a polar pass smears into a fan over the pole
+        const edge = Math.max(2, size >> 7);
+        if (y === 0) out.fill(0, 0, edge * size * 4);
+        if (y === 2 ** z - 1) out.fill(0, (size - edge) * size * 4);
       }
     }
     const bmp = await bitmap(out, size);

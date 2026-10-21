@@ -15,15 +15,18 @@ export function setProxy(p) { cfg.s3Proxy = p; }
 const cache = new Map(); // prefix -> {t, ttl, p: Promise}
 const RE_ITEM = /<Key>([^<]+)<\/Key>[\s\S]*?<Size>(\d+)<\/Size>/g;
 
-export async function listKeys(bucket, prefix, ttl = 60e3, signal) {
-  const ck = `${bucket}/${prefix}`, now = Date.now();
+/** Keys under a prefix: [{key, size}]. startAfter: only keys sorting after it (names that start
+ *  with a time list just the recent part of a day folder); maxKeys: stop after that many. */
+export async function listKeys(bucket, prefix, ttl = 60e3, signal, { startAfter = '', maxKeys = 0 } = {}) {
+  const ck = `${bucket}/${prefix}|${startAfter}|${maxKeys}`, now = Date.now();
   const hit = cache.get(ck);
   if (hit && now - hit.t < hit.ttl) return hit.p;
   const p = (async () => {
     const out = [];
     let token = null;
     for (let page = 0; page < 20; page++) {
-      const q = new URLSearchParams({ 'list-type': '2', prefix, 'max-keys': '1000' });
+      const q = new URLSearchParams({ 'list-type': '2', prefix, 'max-keys': String(maxKeys && maxKeys < 1000 ? maxKeys : 1000) });
+      if (startAfter && !token) q.set('start-after', startAfter);
       if (token) q.set('continuation-token', token);
       const r = await fetch(`${s3url(bucket)}?${q}`, { signal });
       if (!r.ok) throw new Error(`listing failed (HTTP ${r.status})`);
@@ -31,7 +34,7 @@ export async function listKeys(bucket, prefix, ttl = 60e3, signal) {
       for (const m of xml.matchAll(RE_ITEM)) out.push({ key: m[1].replace(/&amp;/g, '&'), size: +m[2] });
       const tr = /<IsTruncated>true<\/IsTruncated>/.test(xml);
       token = tr ? (xml.match(/<NextContinuationToken>([^<]+)<\/NextContinuationToken>/) || [])[1] : null;
-      if (!token) break;
+      if (!token || (maxKeys && out.length >= maxKeys)) break;
     }
     return out;
   })();

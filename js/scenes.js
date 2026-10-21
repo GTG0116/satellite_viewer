@@ -4,6 +4,7 @@ import { SATS, RGBS, bandsFor, bandRes, buildLut } from './catalog.js';
 import { availableScans } from './listing.js';
 import { s3url } from './listing.js';
 import { subgrid, windowForBBox, resKm } from './geo.js';
+import { polarPlan, polarScans, loadPolarFrame } from './polar.js';
 
 // sector sizes in 2 km pixels [rows, cols]
 const DIMS2 = {
@@ -38,6 +39,10 @@ export function familyFor(sat, resolution) {
  */
 export function plan({ sat, sector, product, resolution, bbox, bandList }, budget) {
   const kind = SATS[sat].kind;
+  if (kind === 'polar') {
+    if (bandList) throw new Error('The 3D cloud volume works on geostationary frames (GOES, Himawari, GK2A)');
+    return polarPlan({ sat, sector, product }, budget);
+  }
   const family = familyFor(sat, resolution);
   const roles = bandList ? Object.fromEntries(bandList.map((b) => [`b${b}`, b])) : bandsFor(sat, product);
   const bands = [...new Set(Object.values(roles))].sort((a, b) => a - b);
@@ -71,6 +76,7 @@ export function plan({ sat, sector, product, resolution, bbox, bandList }, budge
 /** Download estimate (bytes) of one frame from the listing sizes. */
 export function estimateBytes(p, scan) {
   const kind = SATS[p.sat].kind;
+  if (p.polar) return scan.bytes || 0;
   const rows = p.full ? 1 : (p.win2[1] - p.win2[0]) / DIMS2[kind].full[0];
   if (kind === 'goes') {
     if (p.family === 'cmip') { const f = scan.bands[0]; return f ? f.size * (p.bands.length / 16) * rows * 1.05 : 0; }
@@ -98,6 +104,7 @@ function segmentNeeded(p, b, seg) {
 }
 
 export async function scansFor(p, opts) {
+  if (p.polar) return polarScans(p.sat, p.product, p.minutes, opts);
   return availableScans(p.sat, p.sector === 'custom' ? 'custom' : p.sector, p.family, p.bands, opts);
 }
 
@@ -149,6 +156,7 @@ export async function loadBands(p, scan, pool, { pri = 5, signal } = {}) {
 
 /** Decode one frame. pool: worker Pool. Returns the frame record. */
 export async function loadFrame(p, scan, pool, { pri = 5, signal } = {}) {
+  if (p.polar) return loadPolarFrame(p, scan, pool, { pri, signal, key: frameKey(p, scan) });
   const t0 = performance.now();
   const { bandData, bytes } = await loadBands(p, scan, pool, { pri, signal });
   const frame = { key: frameKey(p, scan), sat: p.sat, sector: p.sector, product: p.product, time: scan.t, bytes, plan: p, scan };
@@ -184,5 +192,6 @@ export async function loadFrame(p, scan, pool, { pri = 5, signal } = {}) {
 }
 
 export function frameKey(p, scan) {
-  return [p.sat, p.sector, p.product, p.family, p.ko, p.win2.join('_'), scan.t.getTime()].join('|');
+  // a polar slice still gaining granules is a new frame once it has more
+  return [p.sat, p.sector, p.product, p.family, p.ko, p.win2.join('_'), scan.t.getTime(), scan.granules ? scan.granules.length : ''].join('|');
 }

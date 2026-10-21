@@ -6,6 +6,8 @@
  *   amiFile   one GK2A AMI band (L1B NetCDF-4, 2-D deflate chunks)
  *   composite  an RGB recipe from band codes
  *   retrieve3d cloud fields for the 3D volume view
+ *   glmFile   GLM lightning flashes of one 20 s LCFA file
+ *   swath*    VIIRS / ATMS polar-orbiter slices resampled onto a grid (swath.js)
  */
 import { H5File, setInflate, decodeChunk } from './hdf5.js';
 import { inflateZlib } from './inflate.js';
@@ -194,6 +196,26 @@ function runComposite({ recipe, bands, out, irLut }) {
   return { result: { rgba, bands }, transfer };
 }
 
+// ------------------------------------------------------------------ GLM lightning
+/** Flash centroids and energies of one 20 s GLM L2 LCFA file (small: read whole). */
+async function glmFile({ url, size }, signal) {
+  const src = new RangeSource(url, size, { head: size, signal });
+  const f = await H5File.open(src);
+  const [la, lo, en] = await Promise.all(['flash_lat', 'flash_lon', 'flash_energy'].map((n) => f.dataset(n)));
+  const n = la.shape[0] || 0;
+  const lat = new Float32Array(n), lon = new Float32Array(n), energy = new Float32Array(n);
+  if (n) {
+    const [a, b, e] = await Promise.all([f.readAll(la), f.readAll(lo), f.readAll(en)]);
+    const sc = +first(en.attrs.get('scale_factor')), off = +first(en.attrs.get('add_offset'));
+    for (let i = 0; i < n; i++) {
+      lat[i] = a[i]; lon[i] = b[i];
+      const raw = e[i] & 0xffff; // stored as scaled unsigned 16-bit (J), 65535 = fill
+      energy[i] = raw === 65535 ? 0 : (raw * sc + off) * 1e15;
+    }
+  }
+  return { result: { lat, lon, energy }, transfer: [lat.buffer, lon.buffer, energy.buffer] };
+}
+
 async function retrieve3d(args) {
   const { buildFields } = await import('./retrieve3d.js');
   const out = await buildFields(args);
@@ -201,7 +223,11 @@ async function retrieve3d(args) {
   return { result: r, transfer: [r.field1.buffer, r.field2.buffer, r.field3.buffer, r.elev.buffer] };
 }
 
-const TASKS = { goesFile, hsdSeg, amiFile, composite: runComposite, retrieve3d };
+// polar-orbiter swaths (VIIRS, ATMS): loaded on first use
+const swath = (name) => async (args, signal) => (await import('./swath.js'))[name](args, signal);
+
+const TASKS = { goesFile, hsdSeg, amiFile, composite: runComposite, retrieve3d, glmFile,
+  swathGeo: swath('swathGeo'), swathSplat: swath('swathSplat'), swathMerge: swath('swathMerge'), atmsSlice: swath('atmsSlice') };
 
 export { TASKS };
 if (typeof self !== 'undefined') self.onmessage = async (e) => {

@@ -961,6 +961,9 @@ const IC = {
   info: '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 11v5.5M12 7.6v.4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>',
   reset: '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M4.5 12a7.5 7.5 0 107.5-7.5c-2.3 0-4.3 1-5.7 2.6M4.5 4v4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   vr: '<svg viewBox="0 0 24 24" width="19" height="19"><path d="M3.5 8.5A1.5 1.5 0 015 7h14a1.5 1.5 0 011.5 1.5v7A1.5 1.5 0 0119 17h-4.2l-1.6-2.4a1.4 1.4 0 00-2.4 0L9.2 17H5a1.5 1.5 0 01-1.5-1.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="8" cy="11.6" r="1.6" fill="currentColor"/><circle cx="16" cy="11.6" r="1.6" fill="currentColor"/></svg>',
+  sliders: '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 7h9M17 7h3M4 17h3M11 17h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="15" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
+  camera: '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 8.5A1.5 1.5 0 015.5 7h2.2l1.4-2h5.8l1.4 2h2.2A1.5 1.5 0 0120 8.5v9a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 17.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
+  palette: '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 3.5a8.5 8.5 0 100 17c1.2 0 1.8-.8 1.8-1.7 0-1.3-1.1-1.6-1.1-2.7 0-.9.7-1.6 1.7-1.6h2.1a4 4 0 004-4c0-3.9-3.8-7-8.5-7z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="7.8" cy="11" r="1.2" fill="currentColor"/><circle cx="10.5" cy="7.4" r="1.2" fill="currentColor"/><circle cx="15" cy="7.6" r="1.2" fill="currentColor"/></svg>',
   chev: '<svg viewBox="0 0 24 24" width="14" height="14" class="chev"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
 };
 
@@ -996,87 +999,110 @@ class Viewer {
   // ---------------------------------------------------------------- DOM
   buildDom() {
     const root = el('div', { id: 'r3d' });
-    const row = (k, icon, label, sumId, body) => `
-      <details class="r3d-acc" data-k="${k}"><summary>${IC[icon]}<span>${label}</span><em id="${sumId}"></em>${IC.chev}</summary><div class="r3d-acc-body">${body}</div></details>`;
+    const pane = (k, label, sumId, body) => `
+      <section class="r3d-pane" data-pane="${k}"><header><b>${label}</b><em id="${sumId}"></em></header>${body}</section>`;
+    const tab = (k, icon, label) => `<button role="tab" data-tab="${k}">${IC[icon]}<span>${label}</span></button>`;
+    const view = (act, icon, label, tip) => `<button data-act="${act}" title="${tip}">${IC[icon]}<span>${label}</span></button>`;
     root.innerHTML = `
       <div class="r3d-splitter" id="r3dSplitter" title="Drag to resize"></div>
       <canvas id="r3dCanvas" tabindex="0"></canvas>
       <div class="r3d-bar hidden" id="r3dBar"><div></div></div>
-      <div class="r3d-head">
-        <div class="r3d-tab glass">${IC.cube}<b id="r3dTitle">3D Volume</b><span id="r3dSub"></span>
-          <button class="r3d-ib sm" data-act="close" title="Close the 3D view">${IC.x}</button></div>
-        <div class="r3d-tools glass">
-          <button class="r3d-ib hidden" data-act="vr" id="r3dVrBtn" title="View in a VR headset. ${VR_HELP}">${IC.vr}</button>
-          <button class="r3d-ib" data-act="export" title="Export the view as PNG">${IC.dl}</button>
-          <button class="r3d-ib hidden" data-act="play" id="r3dPlay" title="Play the loop in 3D">${IC.play}</button>
-          <button class="r3d-ib" data-act="window" id="r3dWinBtn" title="Full window">${IC.expand}</button>
-          <button class="r3d-ib" data-act="menu" id="r3dMenuBtn" title="3D view settings">${IC.dots}</button>
-          <button class="r3d-ib" data-act="close" title="Close the 3D view">${IC.x}</button>
-        </div>
+      <div class="r3d-badge">
+        <span class="r3d-badge-ic">${IC.cube}</span>
+        <span class="r3d-badge-txt"><b id="r3dTitle">Cloud volume</b><small id="r3dSub"></small></span>
       </div>
-      <div class="r3d-menu glass hidden" id="r3dMenu">
-        <div class="r3d-menu-head"><b>3D view</b><button class="r3d-ib sm" data-act="menu">${IC.x}</button></div>
-        <div class="r3d-tiles">
-          <button data-act="export">${IC.dl}<span>Export</span></button>
-          <button data-act="newbox">${IC.box}<span>New box</span></button>
-          <button data-act="ground">${IC.person}<span>Ground</span></button>
-          <button data-act="recon" title="Hurricane-hunter view: 3 km up inside an eye (or the clearest gap among tall cloud), looking at the sunlit wall">${IC.plane}<span>Recon</span></button>
-          <button data-act="overview">${IC.overview}<span>Overview</span></button>
-          <button data-act="tallest">${IC.tower}<span>Tallest</span></button>
-          <button data-act="top">${IC.top}<span>Top-down</span></button>
-          <button data-act="window">${IC.window}<span id="r3dWinLabel">Window</span></button>
-        </div>
-        <div class="r3d-label">Look</div>
-        <div class="r3d-seg" id="r3dLook"><button data-look="clouds">Clouds</button><button data-look="satellite">Satellite</button></div>
-        <div class="r3d-presets" id="r3dPresets">
-          <button data-p="photoreal" title="Natural colours and lighting">Photoreal</button>
-          <button data-p="storm" title="Denser, darker cloud, hazy air and rain shafts">Storm</button>
-          <button data-p="heights" title="Clouds coloured by altitude (blue low … red / violet high)">Heights</button>
-          <button data-p="structure" title="2× vertical, smooth solid shapes in clear air">Structure</button>
-        </div>
-        ${row('scene', 'scene', 'Scene and camera', 'sumScene', `
-          <label class="row" title="Vertical exaggeration of clouds and terrain (1× = true scale)">Height <input type="range" id="r3dVex" min="1" max="6" step="0.25"><span class="mono" id="r3dVexV"></span></label>
-          <label class="row">Field of view <input type="range" id="r3dFov" min="25" max="95" step="1"><span class="mono" id="r3dFovV"></span></label>
-          <label class="row" title="Horizontal visibility near the ground">Visibility <input type="range" id="r3dVis" min="15" max="400" step="5"><span class="mono" id="r3dVisV"></span></label>
-          <label class="row">Exposure <input type="range" id="r3dExp" min="0.2" max="3" step="0.05"><span class="mono" id="r3dExpV"></span></label>
-          <label class="row">Quality <select id="r3dQuality"><option value="draft">Draft</option><option value="standard">Standard</option><option value="high">High</option></select></label>
-          <label class="row check"><input type="checkbox" id="r3dFoot"> Show the camera and its view on the map</label>`)}
-        ${row('sun', 'sun', 'Sun and lighting', 'sumSun', `
-          <label class="row check"><input type="checkbox" id="r3dSunAuto"> Sun at scan time</label>
-          <label class="row">Elevation <input type="range" id="r3dSunEl" min="-4" max="88" step="0.5"><span class="mono" id="r3dSunElV"></span></label>
-          <label class="row">Azimuth <input type="range" id="r3dSunAz" min="0" max="360" step="1"><span class="mono" id="r3dSunAzV"></span></label>
-          <div class="note" id="r3dSunNote"></div>`)}
-        ${row('clouds', 'cloud', 'Clouds and rain', 'sumClouds', `
-          <label class="row check" title="Bases come from the retrieval: the lifting condensation level for cumulus and deep cloud, a layer depth for mid / high cloud"><input type="checkbox" id="r3dBaseAuto"> Retrieved cloud base</label>
-          <label class="row" title="Base of cumulus and deep cloud, above ground">Base <input type="range" id="r3dBase" min="0.2" max="3" step="0.1"><span class="mono" id="r3dBaseV"></span></label>
-          <label class="row" title="Scales the retrieved extinction">Density <input type="range" id="r3dDensity" min="0.2" max="3" step="0.05"><span class="mono" id="r3dDensityV"></span></label>
-          <label class="row" title="How much of each grid cell is filled with cloud (sub-pixel cloud fraction)">Coverage <input type="range" id="r3dCoverage" min="-0.4" max="0.4" step="0.02"><span class="mono" id="r3dCoverageV"></span></label>
-          <label class="row" title="Small-scale erosion of cloud edges">Detail <input type="range" id="r3dDetail" min="0" max="1.6" step="0.05"><span class="mono" id="r3dDetailV"></span></label>
-          <label class="row check"><input type="checkbox" id="r3dRain"> Rain shafts under deep cloud</label>`)}
-        ${row('frames', 'film', 'Frames', 'sumFrames', `
-          <label class="row">Show <select id="r3dFrames"><option value="single">Shown frame</option><option value="loop">Loop</option><option value="interp">Loop, interpolated</option></select></label>
-          <label class="row">Speed <select id="r3dSpeed"><option value="700">Slow</option><option value="350">Normal</option><option value="160">Fast</option></select></label>
-          <div class="note" id="r3dFramesNote">Plays the map's loop frames (set the loop length on the timeline) in 3D. Interpolated playback morphs the clouds between scans.</div>`)}
-        ${row('info', 'info', 'Retrieval', 'sumInfo', `
-          <div id="r3dStats" class="r3d-stats mono"></div>
-          <details class="r3d-how"><summary>How the clouds are built</summary>
-            <p>Cloud-top height comes from the 10.3 µm brightness temperature against the clear-sky surface temperature (6.5 K/km lapse rate, semi-transparent ice corrected with the split window, capped at the tropopause).</p>
-            <p>Optical depth comes from 0.64 µm reflectance by day (two-stream) and from the IR split window / 3.9 µm fog test at night or with a low sun. Dim, warm pixels of broken cloud are unmixed into a sub-pixel cloud fraction, so small cumulus keep their true height.</p>
-            <p>Bases follow the cloud type: cumulus, towers and optically thick systems reach down to the lifting condensation level as one deep column; altocumulus, altostratus, cirrus and anvils away from the cores are layers 0.3–5 km deep, deeper the thicker they are. Extinction = optical depth / depth, so the clouds reflect as much light as the satellite saw.</p>
-            <p>Satellites see only cloud tops: one layer per column, bases are estimated, and detail below the pixel size is procedural noise. Rain shafts are a proxy from cold, very thick tops.</p>
-          </details>`)}
-        <button class="r3d-reset" data-act="reset">${IC.reset}<span>Reset 3D view settings</span></button>
-        <div class="note r3d-reset-note">Puts every 3D view setting back to its default.</div>
+      <nav class="r3d-rail" aria-label="3D view tools">
+        <button class="r3d-ib" data-act="menu" id="r3dMenuBtn" title="Scene settings">${IC.sliders}</button>
+        <button class="r3d-ib hidden" data-act="play" id="r3dPlay" title="Play the loop in 3D">${IC.play}</button>
+        <button class="r3d-ib" data-act="export" title="Save the view as a PNG">${IC.dl}</button>
+        <button class="r3d-ib hidden" data-act="vr" id="r3dVrBtn" title="View in a VR headset. ${VR_HELP}">${IC.vr}</button>
+        <button class="r3d-ib" data-act="window" id="r3dWinBtn" title="Full window">${IC.expand}</button>
+        <span class="r3d-sr" id="r3dWinLabel">Window</span>
+        <i class="r3d-rail-sep"></i>
+        <button class="r3d-ib" data-act="close" title="Close the 3D view">${IC.x}</button>
+      </nav>
+      <div class="r3d-dock" id="r3dDock" role="toolbar" aria-label="Viewpoints">
+        ${view('ground', 'person', 'Ground', 'Stand on the ground in a clearing (a cyclone eye if there is one), looking at the cloud')}
+        ${view('recon', 'plane', 'Recon', 'Hurricane-hunter view: 3 km up inside an eye (or the clearest gap among tall cloud), looking at the sunlit wall')}
+        ${view('overview', 'overview', 'Overview', 'The whole area from above at an angle')}
+        ${view('tallest', 'tower', 'Tallest', 'Look at the highest cloud tops')}
+        ${view('top', 'top', 'Top-down', 'Straight down, as the satellite sees it')}
+        <i class="r3d-dock-sep"></i>
+        ${view('newbox', 'box', 'New area', 'Pick another area on the map')}
       </div>
+      <aside class="r3d-insp hidden" id="r3dMenu" aria-label="Scene settings">
+        <div class="r3d-insp-head"><b>Scene settings</b><button class="r3d-ib sm" data-act="menu" title="Close the settings">${IC.x}</button></div>
+        <div class="r3d-tabs" id="r3dTabs" role="tablist">
+          ${tab('style', 'palette', 'Style')}${tab('camera', 'camera', 'Camera')}${tab('sun', 'sun', 'Sun')}${tab('clouds', 'cloud', 'Clouds')}${tab('loop', 'film', 'Loop')}${tab('data', 'info', 'Data')}
+        </div>
+        <div class="r3d-panes">
+          ${pane('style', 'Style', 'sumStyle', `
+            <div class="r3d-label">Colour the clouds by</div>
+            <div class="r3d-seg" id="r3dLook"><button data-look="clouds">Sunlight</button><button data-look="satellite">The map's product</button></div>
+            <div class="r3d-label">Preset</div>
+            <div class="r3d-presets" id="r3dPresets">
+              <button data-p="photoreal"><b>Photoreal</b><small>Natural colours and lighting</small></button>
+              <button data-p="storm"><b>Storm</b><small>Denser, darker cloud, hazy air, rain shafts</small></button>
+              <button data-p="heights"><b>Heights</b><small>Coloured by altitude, blue low to violet high</small></button>
+              <button data-p="structure"><b>Structure</b><small>2× vertical, smooth solid shapes, clear air</small></button>
+            </div>`)}
+          ${pane('camera', 'Camera and scene', 'sumScene', `
+            <label class="row" title="Vertical exaggeration of clouds and terrain (1× = true scale)">Height <input type="range" id="r3dVex" min="1" max="6" step="0.25"><span class="mono" id="r3dVexV"></span></label>
+            <label class="row">Field of view <input type="range" id="r3dFov" min="25" max="95" step="1"><span class="mono" id="r3dFovV"></span></label>
+            <label class="row" title="Horizontal visibility near the ground">Visibility <input type="range" id="r3dVis" min="15" max="400" step="5"><span class="mono" id="r3dVisV"></span></label>
+            <label class="row">Exposure <input type="range" id="r3dExp" min="0.2" max="3" step="0.05"><span class="mono" id="r3dExpV"></span></label>
+            <label class="row">Quality <select id="r3dQuality"><option value="draft">Draft</option><option value="standard">Standard</option><option value="high">High</option></select></label>
+            <label class="row check"><input type="checkbox" id="r3dFoot"> Show the camera and its view on the map</label>`)}
+          ${pane('sun', 'Sun and lighting', 'sumSun', `
+            <label class="row check"><input type="checkbox" id="r3dSunAuto"> Sun at scan time</label>
+            <label class="row">Elevation <input type="range" id="r3dSunEl" min="-4" max="88" step="0.5"><span class="mono" id="r3dSunElV"></span></label>
+            <label class="row">Azimuth <input type="range" id="r3dSunAz" min="0" max="360" step="1"><span class="mono" id="r3dSunAzV"></span></label>
+            <div class="note" id="r3dSunNote"></div>`)}
+          ${pane('clouds', 'Clouds and rain', 'sumClouds', `
+            <label class="row check" title="Bases come from the retrieval: the lifting condensation level for cumulus and deep cloud, a layer depth for mid / high cloud"><input type="checkbox" id="r3dBaseAuto"> Retrieved cloud base</label>
+            <label class="row" title="Base of cumulus and deep cloud, above ground">Base <input type="range" id="r3dBase" min="0.2" max="3" step="0.1"><span class="mono" id="r3dBaseV"></span></label>
+            <label class="row" title="Scales the retrieved extinction">Density <input type="range" id="r3dDensity" min="0.2" max="3" step="0.05"><span class="mono" id="r3dDensityV"></span></label>
+            <label class="row" title="How much of each grid cell is filled with cloud (sub-pixel cloud fraction)">Coverage <input type="range" id="r3dCoverage" min="-0.4" max="0.4" step="0.02"><span class="mono" id="r3dCoverageV"></span></label>
+            <label class="row" title="Small-scale erosion of cloud edges">Detail <input type="range" id="r3dDetail" min="0" max="1.6" step="0.05"><span class="mono" id="r3dDetailV"></span></label>
+            <label class="row check"><input type="checkbox" id="r3dRain"> Rain shafts under deep cloud</label>`)}
+          ${pane('loop', 'Animation', 'sumFrames', `
+            <label class="row">Show <select id="r3dFrames"><option value="single">Shown frame</option><option value="loop">Loop</option><option value="interp">Loop, interpolated</option></select></label>
+            <label class="row">Speed <select id="r3dSpeed"><option value="700">Slow</option><option value="350">Normal</option><option value="160">Fast</option></select></label>
+            <div class="note" id="r3dFramesNote">Plays the map's loop frames (set the loop length on the timeline) in 3D. Interpolated playback morphs the clouds between scans.</div>`)}
+          ${pane('data', 'Retrieval', 'sumInfo', `
+            <div id="r3dStats" class="r3d-stats mono"></div>
+            <details class="r3d-how"><summary>How the clouds are built</summary>
+              <p>Cloud-top height comes from the 10.3 µm brightness temperature against the clear-sky surface temperature (6.5 K/km lapse rate, semi-transparent ice corrected with the split window, capped at the tropopause).</p>
+              <p>Optical depth comes from 0.64 µm reflectance by day (two-stream) and from the IR split window / 3.9 µm fog test at night or with a low sun. Dim, warm pixels of broken cloud are unmixed into a sub-pixel cloud fraction, so small cumulus keep their true height.</p>
+              <p>Bases follow the cloud type: cumulus, towers and optically thick systems reach down to the lifting condensation level as one deep column; altocumulus, altostratus, cirrus and anvils away from the cores are layers 0.3–5 km deep, deeper the thicker they are. Extinction = optical depth / depth, so the clouds reflect as much light as the satellite saw.</p>
+              <p>Satellites see only cloud tops: one layer per column, bases are estimated, and detail below the pixel size is procedural noise. Rain shafts are a proxy from cold, very thick tops.</p>
+            </details>`)}
+        </div>
+        <button class="r3d-reset" data-act="reset" title="Puts every 3D view setting back to its default">${IC.reset}<span>Restore default settings</span></button>
+      </aside>
       <div class="r3d-wait" id="r3dWait">
-        <div class="r3d-wait-ic">${IC.arrowL}</div>
-        <b id="r3dWaitTitle">Drag a box over the clouds</b>
-        <span id="r3dWaitSub">On the map; the 3D view opens here</span>
-        <button class="r3d-btn" data-act="cancel">${IC.x}<span>Cancel</span></button>
+        <div class="r3d-wait-card">
+          <div class="r3d-wait-ic">${IC.box}</div>
+          <b id="r3dWaitTitle">Drag a box over the clouds</b>
+          <span id="r3dWaitSub">On the map; the 3D view opens here</span>
+          <button class="r3d-btn" data-act="cancel">${IC.x}<span>Cancel</span></button>
+        </div>
       </div>
-      <div class="r3d-toast glass hidden" id="r3dToast"><span class="spinner" id="r3dToastSpin"></span><span id="r3dToastText"></span></div>
-      <div class="r3d-frame glass mono hidden" id="r3dFrame"></div>
-      <div class="r3d-help glass mono" id="r3dHelp">Drag orbit · Right-drag pan · Wheel zoom · W A S D / Q E fly (Shift faster)</div>`;
+      <div class="r3d-toast hidden" id="r3dToast"><span class="spinner" id="r3dToastSpin"></span><span id="r3dToastText"></span></div>
+      <div class="r3d-frame mono hidden" id="r3dFrame"></div>
+      <div class="r3d-help mono" id="r3dHelp">Drag orbit · Right-drag pan · Wheel zoom · W A S D / Q E fly (Shift faster)</div>`;
+    // settings tabs: one pane at a time, the last one picked is remembered
+    const tabs = root.querySelector('#r3dTabs');
+    const pick = (k) => {
+      if (!root.querySelector(`.r3d-pane[data-pane="${k}"]`)) k = 'style';
+      for (const b of tabs.children) { b.classList.toggle('on', b.dataset.tab === k); b.setAttribute('aria-selected', b.dataset.tab === k); }
+      for (const s of root.querySelectorAll('.r3d-pane')) s.classList.toggle('on', s.dataset.pane === k);
+      try { localStorage.setItem('satview.3d.tab', k); } catch (_) { /* ignore */ }
+    };
+    tabs.onclick = (e) => { const b = e.target.closest('[data-tab]'); if (b) pick(b.dataset.tab); };
+    let tab0 = 'style';
+    try { tab0 = localStorage.getItem('satview.3d.tab') || tab0; } catch (_) { /* ignore */ }
+    pick(tab0);
     document.body.appendChild(root);
     this.root = root;
     this.canvas = root.querySelector('#r3dCanvas');
@@ -1243,14 +1269,14 @@ class Viewer {
     };
     $('r3dSpeed').onchange = (e) => { p.speed = +e.target.value; this.changed(); };
     $('r3dLook').onclick = (e) => {
-      const v = e.target.dataset && e.target.dataset.look;
+      const v = e.target.closest('[data-look]')?.dataset.look;
       if (!v) return;
       p.look = v;
       this.changed();
     };
     $('r3dPresets').onclick = (e) => {
-      const v = e.target.dataset && e.target.dataset.p;
-      if (v) this.applyPreset(v);
+      const b = e.target.closest('[data-p]');
+      if (b) this.applyPreset(b.dataset.p);
     };
     this.syncControls();
   }
@@ -1275,6 +1301,7 @@ class Viewer {
     $('r3dSpeed').value = String(p.speed);
     for (const b of $('r3dLook').children) b.classList.toggle('on', b.dataset.look === p.look);
     for (const b of $('r3dPresets').children) b.classList.toggle('on', b.dataset.p === p.preset);
+    $('sumStyle').textContent = `${p.look === 'satellite' ? 'Product colours' : 'Sunlit'} · ${p.preset ? p.preset[0].toUpperCase() + p.preset.slice(1) : 'Custom'}`;
     $('sumScene').textContent = `${p.vex}× height`;
     $('sumSun').textContent = p.sunAuto ? 'Scan time' : `${(+p.sunElev).toFixed(0)}° · ${(+p.sunAzim).toFixed(0)}°`;
     const lcl = this.S && this.S.stats.lcl_km;

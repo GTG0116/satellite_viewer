@@ -11,8 +11,10 @@ Everything the Python back end did is done in the browser:
   [OpenFreeMap](https://openfreemap.org) vector tiles: globe or flat map, dark / light / satellite base
   maps, day / night terminator, labels and borders above the imagery.
 - **Imagery** stays in its native geostationary pixel grid. Tile workers render map tiles on demand
-  through a `satv://` protocol, taking the single nearest satellite pixel for every map pixel (no
-  smoothing), and hand them to MapLibre as `ImageBitmap`s (no PNG encoding).
+  through a `satv://` protocol, taking the single nearest satellite pixel for every map pixel, and
+  hand them to MapLibre as `ImageBitmap`s (no PNG encoding). *Display → Smooth imagery* blends the
+  2 × 2 pixels around each map pixel instead (bilinear; band codes are linear in the value, RGBs per
+  channel, the nearest kept next to no-data) and lets MapLibre scale tiles linearly.
 - **3D on the map**: cloud-top relief (MapLibre terrain from worker-generated height tiles) and real
   mountains (AWS Terrain Tiles).
 - **3D cloud volume**: the original three.js volumetric renderer. The cloud retrieval
@@ -20,10 +22,39 @@ Everything the Python back end did is done in the browser:
   native resolution inside the box; ground imagery is Esri World Imagery. With a VR headset the
   3D view can be entered in VR (see below).
 
-Satellites: GOES-19 / GOES-18 (live), GOES-16 / GOES-17 (archive), Himawari-9 (live),
-Himawari-8 (archive), GK2A (live, archive from Feb 2023). All 16 bands, 12 RGB composites (11 on
-GK2A, which has no 2.2 µm band for Fire Temperature), loops, archive back to 2015, custom boxes,
-pixel probe. VIIRS / ATMS polar products are not part of the web edition.
+Satellites: GOES-19 / GOES-18 (live), Himawari-9 (live), GK2A (live, archive from Feb 2023),
+NOAA-20 / NOAA-21 / Suomi NPP (polar orbiters, live and archive), and the retired GOES-16 / GOES-17 /
+Himawari-8, which are listed in Archive mode only (going Live from one switches to its successor).
+All 16 bands, 12 RGB composites (11 on GK2A, which has no 2.2 µm band for Fire Temperature), loops,
+archive back to 2015, custom boxes, pixel probe.
+
+**Polar orbiters** (`js/polar.js`, `js/decode/swath.js`): VIIRS I1–I5, M1–M16, the Day/Night Band,
+True Color (M5 / M4 / M3) and Natural Color (I3 / I2 / I1) from the SDR granules, and all 22 ATMS
+channels, rain rate and precipitable water from the MiRS IMG files (`noaa-nesdis-{n20,n21,snpp}-pds`).
+Each frame is a *slice*: the granules that started in one 2 / 5 / 10 / 20 minute window (the *sector*
+buttons), i.e. the strip the satellite scanned then. Day folders are listed from the window's hour
+(`start-after`), so a listing is a few hundred names, not a day's thousands. In the decode workers
+each granule's geolocation is read (750 m GMTCO; older I-band granules fall back to the 375 m GITCO;
+the DNB has its own), every granule's bands are resampled in parallel onto a Lambert azimuthal
+equal-area grid centred on the slice and turned to follow the ground track: each swath pixel claims
+the cells within its footprint that no nearer pixel has claimed, so every cell holds its nearest swath
+pixel (I-band pixel centres are placed inside each 16-line scan from the 750 m geolocation; bow-tie
+deleted pixels never claim cells, the overlapping scan fills them). The parts are merged, the DNB gets
+its contrast from the slice (2nd–99.7th percentile of log radiance), and the result is an ordinary
+frame: tiles, smoothing, colour tables, probe, legend and loops work as for geostationary data, and
+the slice's ground track is drawn as its outline. Cells are native size (375 m / 750 m, ATMS 4 km)
+unless the tier's frame budget needs them coarser. A slice is 20–110 MB of downloads, so polar loops
+are capped at 3 / 6 / 12 frames (Low / Medium / High). Visible bands are empty on the night side. The
+3D cloud volume needs a geostationary frame.
+
+**Overlays** (*Display*): **GLM lightning**, the flashes of the GOES-East and GOES-West Geostationary
+Lightning Mappers in the 1–15 minutes before the shown frame (`js/glm.js`: the 20 s L2 LCFA files,
+each decoded once in a worker; GOES-16 / -17 before GOES-19 / -18 took over), coloured by age and
+sized by energy; and **tropical cyclones** from NHC (Atlantic, East / Central Pacific: NOAA's tropical
+map service) and JTWC (West Pacific, Indian Ocean, Southern Hemisphere: its warning feed and track
+files): position, past and forecast track, NHC's cone, intensity colours, a storm list that flies to
+each (`js/overlays.js`). All of these sources allow browser requests, so the overlays work on GitHub
+Pages too. Cyclones are current storms, shown in Live mode.
 
 **GK2A** (GEO-KOMPSAT-2A, 128.2°E) is read from `noaa-gk2a-pds`: one AMI L1B NetCDF-4 file per band
 (`AMI/L1B/FD` full disk every 10 min, `AMI/L1B/LA` the 1000 km Local Area over Korea every 2 min) with
@@ -146,6 +177,9 @@ web/
   js/app.js          UI, state, loading, playback, archive
   js/map.js          MapLibre map, ping-pong frame layers, terrain, night
   js/volume.js       3D volume tools on the map
+  js/polar.js        polar orbiters: slice listings (VIIRS SDR, MiRS ATMS), slice grids, loading
+  js/glm.js          GLM lightning: file listings and flashes before a time
+  js/overlays.js     lightning + cyclone layers, NHC / JTWC fetching and parsing (shared with frontend/)
   js/render3d.js     three.js volumetric renderer
   js/vr3d.js         WebXR (VR headset) mode of the 3D view
   js/scenes.js       which files / chunks / segments a frame needs
@@ -155,7 +189,8 @@ web/
   js/perf.js         device tiers
   js/pool.js         decode worker pool
   js/tiles/          tile workers + router (satv:// and satdem:// protocols)
-  js/decode/         HDF5, inflate, bzip2, HSD, composites, cloud retrieval, worker (GOES / AHI / AMI readers)
+  js/decode/         HDF5, inflate, bzip2, HSD, composites, cloud retrieval, worker (GOES / AHI / AMI readers),
+                     swath.js (VIIRS / ATMS swaths onto the slice grid)
   vendor/            MapLibre GL JS 6.12.0, three.js 0.160.0
 cloudflare/          Worker + wrangler.toml
 tools/serve.py       local preview server
