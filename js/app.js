@@ -6,6 +6,7 @@ import { autoTier, makeTier, lowerTier, FrameWatch } from './perf.js';
 import { outline, gridCenter, resKm, lonlatToRC } from './geo.js';
 import { setProxy, availableScans } from './listing.js';
 import { Volume } from './volume.js';
+import { loadPolarBox } from './polar.js';
 import { glmFlashes } from './glm.js';
 import * as OV from './overlays.js';
 // settings, device tier, decode workers and the first frame's download started before the map loaded
@@ -531,7 +532,7 @@ const vol = new Volume({
 async function volumeFields(r, progress = () => {}) {
   const f = byId.get(r.sceneId) || shown;
   if (!f) throw new Error('frame not loaded');
-  if (SATS[f.sat].kind === 'polar') throw new Error('The 3D cloud volume works on geostationary frames (GOES, Himawari, GK2A)');
+  if (SATS[f.sat].kind === 'polar') return polarVolumeFields(f, r, progress);
   const roles = rolesOf(f.sat);
   const want = { ir: roles.ir103, red: roles.red, snow: roles.snow, swir: roles.swir, ir12: roles.ir123 };
   const bandList = [...new Set(Object.values(want))];
@@ -568,6 +569,17 @@ async function volumeFields(r, progress = () => {}) {
   const sources = Object.entries(want).filter(([role]) => bands[role]).map(([role, b]) => ({ role, product: bandLabel(f.sat, b),
     time: scan.t.toISOString(), source: SRC[p.family], res_km: +bands[role].resKm.toFixed(2) }));
   return pool.run('retrieve3d', { bands, bbox: r.bbox, time: scan.t.toISOString(), sat: f.sat, sector, sources }, { pri: 0, transfer });
+}
+
+/** Polar slices: VIIRS I5 + I1 of the granules crossing the box (whatever product the map shows). */
+async function polarVolumeFields(f, r, progress) {
+  progress('Finding the VIIRS granules that cross the box…');
+  const { bands, time, granules } = await loadPolarBox(f.sat, f.time, f.plan?.minutes || 5, r.bbox, pool, { progress });
+  progress('Retrieving cloud tops, bases and optical depth…');
+  const sources = Object.entries(bands).map(([role, b]) => ({ role, product: role === 'ir' ? 'I5' : 'I1', time: time.toISOString(),
+    source: `VIIRS SDR · ${granules} granule${granules > 1 ? 's' : ''}`, res_km: +b.resKm.toFixed(2) }));
+  return pool.run('retrieve3d', { bands, bbox: r.bbox, time: time.toISOString(), sat: f.sat, sector: 'swath', sources },
+    { pri: 0, transfer: Object.values(bands).map((b) => b.codes.buffer) });
 }
 
 // ------------------------------------------------------------------ UI: lists

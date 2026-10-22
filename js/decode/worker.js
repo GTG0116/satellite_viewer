@@ -227,7 +227,7 @@ async function retrieve3d(args) {
 const swath = (name) => async (args, signal) => (await import('./swath.js'))[name](args, signal);
 
 const TASKS = { goesFile, hsdSeg, amiFile, composite: runComposite, retrieve3d, glmFile,
-  swathGeo: swath('swathGeo'), swathSplat: swath('swathSplat'), swathMerge: swath('swathMerge'), atmsSlice: swath('atmsSlice') };
+  swathGeo: swath('swathGeo'), swathRing: swath('swathRing'), swathSplat: swath('swathSplat'), swathMerge: swath('swathMerge'), atmsSlice: swath('atmsSlice') };
 
 export { TASKS };
 if (typeof self !== 'undefined') self.onmessage = async (e) => {

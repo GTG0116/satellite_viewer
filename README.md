@@ -19,8 +19,8 @@ Everything the Python back end did is done in the browser:
   mountains (AWS Terrain Tiles).
 - **3D cloud volume**: the original three.js volumetric renderer. The cloud retrieval
   (`js/decode/retrieve3d.js`, a port of `backend/render3d.py`) runs in a worker on 5 bands read at
-  native resolution inside the box; ground imagery is Esri World Imagery. With a VR headset the
-  3D view can be entered in VR (see below).
+  native resolution inside the box (VIIRS I5 + I1 for polar slices); ground imagery is Esri World
+  Imagery. With a VR headset the 3D view can be entered in VR (see below).
 
 Satellites: GOES-19 / GOES-18 (live), Himawari-9 (live), GK2A (live, archive from Feb 2023),
 NOAA-20 / NOAA-21 / Suomi NPP (polar orbiters, live and archive), and the retired GOES-16 / GOES-17 /
@@ -44,8 +44,14 @@ its contrast from the slice (2nd–99.7th percentile of log radiance), and the r
 frame: tiles, smoothing, colour tables, probe, legend and loops work as for geostationary data, and
 the slice's ground track is drawn as its outline. Cells are native size (375 m / 750 m, ATMS 4 km)
 unless the tier's frame budget needs them coarser. A slice is 20–110 MB of downloads, so polar loops
-are capped at 3 / 6 / 12 frames (Low / Medium / High). Visible bands are empty on the night side. The
-3D cloud volume needs a geostationary frame.
+are capped at 3 / 6 / 12 frames (Low / Medium / High). Visible bands are empty on the night side.
+The 3D cloud volume works on polar slices too, whatever product the map shows: the slice's granules
+are picked by their outlines (the G-Ring in each geolocation file's metadata, a few hundred kB), only
+those crossing the box are read (I5 10.8 µm for the cloud tops, I1 0.64 µm for the optical depth by
+day), and they are resampled the same way onto an equal-area grid over the box (375 m, coarser for
+large boxes). SDR reflectance is already divided by the sun's cosine, and VIIRS looks down from
+~830 km, so there is no geostationary parallax correction. A box the slice does not reach says so;
+in the 3D loop, slices that miss the box are left out.
 
 **Overlays** (*Display*): **GLM lightning**, the flashes of the GOES-East and GOES-West Geostationary
 Lightning Mappers in the 1–15 minutes before the shown frame (`js/glm.js`: the 20 s L2 LCFA files,

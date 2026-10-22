@@ -241,7 +241,7 @@ export async function buildFields({ bands, bbox, time, sat, sector, sources }) {
   s = Math.max(-80, s); n = Math.min(80, n);
   const latc = (s + n) / 2, lonc = (w + e) / 2, kx = kmPerDegLon(latc);
   const wKm = (e - w) * kx, hKm = (n - s) * KY;
-  const visRes = bands.red ? bands.red.resKm : 2, irRes = bands.ir.resKm;
+  const irRes = bands.ir.resKm, visRes = bands.red ? bands.red.resKm : irRes;
   let cell = Math.max(visRes, Math.max(wKm, hKm) / MAX_CELLS, 0.25);
   const nx = Math.max(16, Math.round(wKm / cell)), ny = Math.max(16, Math.round(hKm / cell));
   const lon = Float64Array.from({ length: nx }, (_, i) => w + (i + 0.5) / nx * (e - w));
@@ -271,9 +271,11 @@ export async function buildFields({ bands, bbox, time, sat, sector, sources }) {
     lat2[i] = lat[y]; lon2[i] = normLon(lon[x]);
     mu[i] = Math.cos(la) * Math.cos(lo) * S0 + Math.cos(la) * Math.sin(lo) * S1 + Math.sin(la) * S2;
   }
-  const f = retrieve({ bt, red, r16, bt39, bt12, mu, zg, lat: lat2, t, cell, irRes, nx, ny });
-  const g = bands.ir.grid;
-  parallax(f, lon2, lat2, g.lon0, g.H / 1000, kx * (e - w) / nx, KY * (n - s) / ny, nx, ny);
+  // polar swaths (VIIRS SDR): reflectance already divided by the sun's cosine; looked at from
+  // 830 km, not 36 000, so no geostationary parallax shift
+  const g = bands.ir.grid, polar = g.proj === 'laea';
+  const f = retrieve({ bt, red, r16, bt39, bt12, mu, zg, lat: lat2, t, cell, irRes, nx, ny, reflNorm: polar });
+  if (!polar) parallax(f, lon2, lat2, g.lon0, g.H / 1000, kx * (e - w) / nx, KY * (n - s) / ny, nx, ny);
   return {
     result: {
       bbox: [w, s, e, n], center: [lonc, latc], kx, ky: KY, km: [wKm, hKm], cell_km: cell, ir_res_km: irRes, vis_res_km: visRes,
@@ -311,7 +313,7 @@ function parallax(f, lon, lat, satLon, satR, cellX, cellY, nx, ny) {
   for (let i = 0; i < N; i++) { f.base[i] = Math.max(f.base[i], f.zg[i] + 0.05); f.top[i] = Math.max(f.top[i], f.base[i] + 0.12); }
 }
 
-function retrieve({ bt: bt0, red, r16, bt39, bt12, mu, zg: zg0, lat, t, cell, irRes, nx, ny }) {
+function retrieve({ bt: bt0, red, r16, bt39, bt12, mu, zg: zg0, lat, t, cell, irRes, nx, ny, reflNorm = false }) {
   const N = nx * ny;
   const valid = new Uint8Array(N), bt = new Float32Array(N), zg = new Float32Array(N), alat = new Float32Array(N);
   for (let i = 0; i < N; i++) { valid[i] = isF(bt0[i]) ? 1 : 0; bt[i] = valid[i] ? bt0[i] : 290; zg[i] = isF(zg0[i]) ? zg0[i] : 0; alat[i] = Math.abs(lat[i]); }
@@ -323,13 +325,13 @@ function retrieve({ bt: bt0, red, r16, bt39, bt12, mu, zg: zg0, lat, t, cell, ir
   const haveVis = !!red && wDay.some((v) => v > 0);
   if (haveVis) {
     const rn = new Float32Array(N);
-    for (let i = 0; i < N; i++) rn[i] = clamp((isF(red[i]) ? red[i] : 0) / Math.max(mu[i], 0.12), 0, 1.3);
+    for (let i = 0; i < N; i++) rn[i] = clamp((isF(red[i]) ? red[i] : 0) / (reflNorm ? 1 : Math.max(mu[i], 0.12)), 0, 1.3);
     let rs = upsample(blockStat(rn.map((v, i) => (valid[i] ? v : NaN)), nx, ny, b, 8), nx, ny, 0.08);
     rs = gauss(rs, nx, ny, b * 0.7);
     for (let i = 0; i < N; i++) { rs[i] = clamp(rs[i], 0.02, 0.35); if (zg[i] < 0.005) rs[i] = Math.min(rs[i], 0.1); }
     for (let i = 0; i < N; i++) {
       if (r16) {
-        const s16 = (isF(r16[i]) ? r16[i] : 1) / Math.max(mu[i], 0.12);
+        const s16 = (isF(r16[i]) ? r16[i] : 1) / (reflNorm ? 1 : Math.max(mu[i], 0.12));
         const ndsi = (rn[i] - s16) / Math.max(rn[i] + s16, 1e-3);
         snow[i] = ndsi > 0.4 && s16 < 0.22 && bt[i] > 255 ? 1 : 0;
       }

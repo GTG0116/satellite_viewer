@@ -5,11 +5,12 @@
  * share a start time in their names (SVI05_j01_d20261021_t0000304_..., GMTCO_j01_d20261021_t0000304_...);
  * ATMS comes from the MiRS IMG files (~32 s). In the decode workers each slice is resampled onto a
  * local equal-area grid by nearest swath pixel (decode/swath.js); from then on it is a frame like
- * any other (tiles, probing, colour tables, smoothing, loops).
+ * any other (tiles, probing, colour tables, smoothing, loops). The 3D cloud volume reads its own
+ * bands (I5 + I1) for just the granules that cross its box (loadPolarBox).
  */
-import { SATS, VIIRS, VIIRS_GEO, polarSource, SLICE_MIN } from './catalog.js';
+import { SATS, VIIRS, VIIRS_GEO, polarSource, SLICE_MIN, NAN_CODE } from './catalog.js';
 import { listKeys, s3url } from './listing.js';
-import { lonlatToXY, trackTurn } from './geo.js';
+import { lonlatToXY, laeaXY, trackTurn } from './geo.js';
 
 const pad = (n, w = 2) => String(n).padStart(w, '0');
 const ymd = (d) => `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}`;
@@ -66,6 +67,31 @@ async function mirsFiles(bucket, t0, t1, signal) {
   return out;
 }
 
+/** VIIRS granules starting in [t0, t1] with their geolocation: [{t, bands: [{key, size} | null], geo: {key, size, kind}, bytes}].
+ *  Every band is needed unless `optional`, then only the first (the others are null where missing). */
+async function viirsGranules(s, bandIds, t0, t1, signal, optional = false) {
+  const gk = VIIRS[bandIds[0]][6];
+  const geoList = (k) => sdrGranules(s.bucket, VIIRS_GEO[k][0], VIIRS_GEO[k][1], s.tag, t0, t1, signal);
+  const [lists, geoM] = await Promise.all([
+    Promise.all(bandIds.map((b) => sdrGranules(s.bucket, VIIRS[b][3], VIIRS[b][4], s.tag, t0, t1, signal))),
+    geoList(gk === 'D' ? 'D' : 'M'),
+  ]);
+  const geo = new Map([...geoM].map(([id, g]) => [id, { ...g, kind: gk === 'D' ? 'D' : 'M' }]));
+  // older I-band granules: NODD no longer has the 750 m geolocation, use the 375 m one
+  if (gk === 'I' && [...lists[0].keys()].some((id) => !geo.has(id))) {
+    for (const [id, g] of await geoList('I')) if (!geo.has(id)) geo.set(id, { ...g, kind: 'I' });
+  }
+  const out = [];
+  for (const [id, g0] of lists[0]) {
+    const g = geo.get(id);
+    if (!g || (!optional && !lists.every((l) => l.has(id)))) continue;
+    const bands = lists.map((l) => l.get(id) || null);
+    const share = VIIRS[bandIds[0]][2] === 'dnb' ? SHARE.dnb : SHARE.band;
+    out.push({ t: g0.t, bands, geo: g, bytes: bands.reduce((a, b) => a + (b ? b.size * share : 0), 0) + g.size * SHARE[g.kind] });
+  }
+  return out;
+}
+
 /** Slices of a product, newest first: live the latest `limit`, archive every one in [end - hours, end].
  *  Each: {t (slice start), granules: [{t, bands: [{key, size}], geo: {key, size, kind}}], bytes}. */
 export async function polarScans(sat, product, minutes, { limit = 12, end = null, hours = null, signal } = {}) {
@@ -79,24 +105,7 @@ export async function polarScans(sat, product, minutes, { limit = 12, end = null
   if (src.family === 'atms') {
     grans = (await mirsFiles(s.bucket, t0, t1, signal)).map((f) => ({ t: f.t, bands: [f], geo: null, bytes: f.size }));
   } else {
-    const gk = VIIRS[src.bands[0]][6];
-    const geoList = (k) => sdrGranules(s.bucket, VIIRS_GEO[k][0], VIIRS_GEO[k][1], s.tag, t0, t1, signal);
-    const [lists, geoM] = await Promise.all([
-      Promise.all(src.bands.map((b) => sdrGranules(s.bucket, VIIRS[b][3], VIIRS[b][4], s.tag, t0, t1, signal))),
-      geoList(gk === 'D' ? 'D' : 'M'),
-    ]);
-    let geo = new Map([...geoM].map(([id, g]) => [id, { ...g, kind: gk === 'D' ? 'D' : 'M' }]));
-    // older I-band granules: NODD no longer has the 750 m geolocation, use the 375 m one
-    if (gk === 'I' && [...lists[0].keys()].some((id) => !geo.has(id))) {
-      for (const [id, g] of await geoList('I')) if (!geo.has(id)) geo.set(id, { ...g, kind: 'I' });
-    }
-    for (const [id, g0] of lists[0]) {
-      const g = geo.get(id);
-      if (!g || !lists.every((l) => l.has(id))) continue;
-      const bands = lists.map((l) => l.get(id));
-      const share = VIIRS[src.bands[0]][2] === 'dnb' ? SHARE.dnb : SHARE.band;
-      grans.push({ t: g0.t, bands, geo: g, bytes: bands.reduce((a, b) => a + b.size * share, 0) + g.size * SHARE[g.kind] });
-    }
+    grans = await viirsGranules(s, src.bands, t0, t1, signal);
   }
   const by = new Map();
   for (const g of grans) { const k = Math.floor(g.t / step) * step; (by.get(k) || by.set(k, []).get(k)).push(g); }
@@ -173,3 +182,90 @@ export async function loadPolarFrame(p, scan, pool, { pri = 5, signal, key } = {
   return frame;
 }
 
+// ------------------------------------------------------------------ 3D cloud volume
+const normLon = (x) => ((x + 180) % 360 + 360) % 360 - 180;
+
+/** Does a granule outline ([lon, lat] ring) touch the box [w, s, e, n] (e may exceed 180)? Its edges
+ *  are walked in small steps (any step inside the box), and the box's corners and centre are tested
+ *  against the outline (a box inside a granule). */
+function ringCrosses(ring, [w, s, e, n]) {
+  if (ring.length < 3) return false;
+  const lc = (w + e) / 2, pts = ring.map(([lo, la]) => [lc + normLon(lo - lc), la]);
+  const inBox = ([x, y]) => x >= w && x <= e && y >= s && y <= n;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    for (let k = 0; k < 24; k++) if (inBox([a[0] + (b[0] - a[0]) * k / 24, a[1] + (b[1] - a[1]) * k / 24])) return true;
+  }
+  const inRing = ([x, y]) => {
+    let c = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xi, yi] = pts[i], [xj, yj] = pts[j];
+      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  };
+  return [[w, s], [e, s], [e, n], [w, n], [lc, (s + n) / 2]].some(inRing);
+}
+
+/** North-up equal-area grid over a box, cells of `res` km. */
+function boxGrid([w, s, e, n], res) {
+  const lon0 = normLon((w + e) / 2), lat0 = (s + n) / 2, o = [0, 0];
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (let k = 0; k <= 16; k++) {
+    const lo = w + (e - w) * k / 16, la = s + (n - s) * k / 16;
+    for (const [x, y] of [[lo, s], [lo, n], [w, la], [e, la]]) {
+      if (!laeaXY(lon0, lat0, normLon(x), y, o)) continue;
+      if (o[0] < x0) x0 = o[0]; if (o[0] > x1) x1 = o[0]; if (o[1] < y0) y0 = o[1]; if (o[1] > y1) y1 = o[1];
+    }
+  }
+  const nx = Math.ceil((x1 - x0) / res) + 2, ny = Math.ceil((y1 - y0) / res) + 2;
+  return { proj: 'laea', lon0, lat0, rc: 1, rs: 0, x0: x0 - res / 2, dx: res, y0: y1 + res / 2, dy: -res, nx, ny };
+}
+
+/** The bands of the 3D cloud retrieval for a polar slice (start t, `minutes` long) inside a box:
+ *  VIIRS I5 (10.8 µm) and I1 (0.64 µm) of the granules whose outlines cross the box, resampled by
+ *  nearest swath pixel onto an equal-area grid over the box (native 375 m, coarser for large boxes).
+ *  Returns {bands: {ir, red?}: {codes, w, h, grid, kind, resKm}, time, granules, bytes}. */
+export async function loadPolarBox(sat, t, minutes, bbox, pool, { pri = 0, progress = () => {}, signal } = {}) {
+  const s = SATS[sat];
+  let [w, so, e, n] = bbox;
+  if (e < w) e += 360;
+  const t0 = t.getTime();
+  const grans = await viirsGranules(s, ['i5', 'i1'], t0, t0 + minutes * 60e3 - 1, signal, true);
+  if (!grans.length) throw new Error('No VIIRS imager granules in this slice yet');
+  const geoArgs = (g) => ({ url: s3url(s.bucket, g.geo.key), size: g.geo.size, group: VIIRS_GEO[g.geo.kind][2] });
+  const rings = await Promise.all(grans.map((g) => pool.run('swathRing', geoArgs(g), { pri, signal }).catch(() => null)));
+  const pad = 0.3 + 0.05 * Math.max(e - w, n - so);
+  // a granule without an outline is read anyway (the resampling drops it if it misses the box)
+  const used = grans.filter((g, i) => !rings[i] || ringCrosses(rings[i], [w - pad, so - pad, e + pad, n + pad]));
+  if (!used.length) throw new Error('This slice does not reach the 3D box: each polar slice covers only the strip scanned then');
+  const kx = 111.32 * Math.cos(((so + n) / 2) * Math.PI / 180);
+  const grid = boxGrid([w, so, e, n], Math.max(0.375, Math.max((e - w) * kx, (n - so) * 110.57) / 480));
+  const mb = used.reduce((a, g) => a + g.bytes, 0) / 1e6;
+  progress(`Loading VIIRS I5 + I1 · ${used.length} granule${used.length > 1 ? 's' : ''} · ≈${mb.toFixed(0)} MB…`);
+  const parts = await Promise.all(used.map(async (g) => {
+    const geo = await pool.run('swathGeo', geoArgs(g), { pri, signal });
+    const band = (b, j, q, optional) => (g.bands[j] ? { url: s3url(s.bucket, g.bands[j].key), size: g.bands[j].size, group: VIIRS[b][5], kind: VIIRS[b][2],
+      fine: true, q, optional } : null);
+    const bands = [band('i5', 0, 'bt', false), band('i1', 1, 'refl', true)].filter(Boolean);
+    const part = await pool.run('swathSplat', { lat: geo.lat, lon: geo.lon, gy: geo.ny, gx: geo.nx, geoKind: g.geo.kind, grid, bands, q: 'bt' },
+      { pri, signal, transfer: [geo.lat.buffer, geo.lon.buffer] });
+    // a granule read without I1 (none posted): an empty I1 part keeps the band count
+    if (part.codes.length < 2) part.codes.push(new Uint16Array(part.codes[0].length).fill(NAN_CODE));
+    part.bytes += geo.bytes;
+    return part;
+  }));
+  let r;
+  try {
+    r = await pool.run('swathMerge', { parts, grid, nb: 2, q: 'bt', all: true }, { pri, signal,
+      transfer: parts.flatMap((pt) => [pt.dist.buffer, ...pt.codes.map((c) => c.buffer)]) });
+  } catch (err) {
+    if (/No data/.test(err.message)) throw new Error('This slice has no VIIRS data inside the 3D box');
+    throw err;
+  }
+  const resKm = Math.abs(grid.dx), mk = (codes, kind) => ({ codes, w: grid.nx, h: grid.ny, grid, kind, resKm });
+  const out = { ir: mk(r.bands[0], 'bt') };
+  // I1 only where the sun was up: an all-empty band would read as black (cloud-free) ground
+  if (r.bands[1].some((c) => c !== NAN_CODE)) out.red = mk(r.bands[1], 'refl');
+  return { bands: out, time: new Date(Math.min(...used.map((g) => g.t))), granules: used.length, bytes: parts.reduce((a, p) => a + p.bytes, 0) };
+}

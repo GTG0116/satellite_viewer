@@ -1,7 +1,7 @@
 /* App-shell cache: the viewer's own files and the static map assets load from the cache, so a
  * repeat visit on a slow connection starts instantly. Satellite data is never cached here
  * (it changes every few minutes and is far too large). */
-const VERSION = 'satview-v5';
+const VERSION = 'satview-v6';
 const SHELL = ['./', 'index.html', 'css/app.css', 'config.js', 'icon.svg', 'manifest.webmanifest',
   'vendor/maplibre/maplibre-gl.mjs', 'vendor/maplibre/maplibre-gl-shared.mjs', 'vendor/maplibre/maplibre-gl-worker.mjs', 'vendor/maplibre/maplibre-gl.css',
   'js/boot.js', 'js/app.js', 'js/map.js', 'js/volume.js', 'js/catalog.js', 'js/geo.js', 'js/scenes.js', 'js/listing.js', 'js/pool.js', 'js/perf.js',

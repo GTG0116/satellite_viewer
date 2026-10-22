@@ -3,6 +3,7 @@
  * the 750 m geolocation, so their centres are placed inside each 16-line scan from those points.
  *
  *   swathGeo    one granule's geolocation (lat / lon arrays, nadir track, edge samples)
+ *   swathRing   one granule's outline (G-Ring metadata only)
  *   swathSplat  one granule's bands: every swath pixel claims the grid cells within its footprint
  *               that no nearer pixel has claimed (a distance buffer), giving each cell its nearest
  *               pixel; bow-tie deleted / fill pixels never claim cells (the overlapping scan does)
@@ -78,6 +79,18 @@ export async function swathGeo({ url, size, group }, signal) {
   return { result: { lat, lon, ny, nx, nadir, edge, bytes: stats.bytes - b0 }, transfer: [lat.buffer, lon.buffer] };
 }
 
+/** A granule's outline from its geolocation file's metadata (the G-Ring: 8+ [lon, lat] points
+ *  around the swath), without reading the geolocation arrays. */
+export async function swathRing({ url, size, group }, signal) {
+  const f = await H5File.open(new RangeSource(url, size, { head: 64 * 1024, signal }));
+  const prod = group.replace(/_All$/, '');
+  const a = await f.attrs(`Data_Products/${prod}/${prod}_Gran_0`);
+  const la = a.get('G-Ring_Latitude') || [], lo = a.get('G-Ring_Longitude') || [];
+  const ring = [];
+  for (let i = 0; i < Math.min(la.length, lo.length); i++) if (okLat(la[i])) ring.push([lo[i], la[i]]);
+  return { result: ring };
+}
+
 /** Grid row / column of every geolocation pixel (NaN where there is none). */
 function project(lat, lon, grid) {
   const n = lat.length, X = new Float32Array(n), Y = new Float32Array(n);
@@ -118,13 +131,21 @@ async function bandCodes({ url, size, group, kind }, q, signal) {
   return out;
 }
 
+/** bands: [{url, size, group, kind, fine, q?, optional?}]; a band's own q overrides q, an
+ *  optional band that cannot be read is left empty instead of dropping the granule. */
 export async function swathSplat({ lat, lon, gy, gx, geoKind, grid, bands, q }, signal) {
   const b0 = stats.bytes;
   // reflective bands on the night side come as near-empty files: no data, not an error
-  const read = (b) => bandCodes(b, q, signal).catch((e) => { if (signal?.aborted) throw e; return null; });
+  const read = (b) => bandCodes(b, b.q || q, signal).catch((e) => { if (signal?.aborted) throw e; return null; });
   const [codesIn, [X, Y]] = await Promise.all([Promise.all(bands.map(read)), Promise.resolve(project(lat, lon, grid))]);
   const empty = () => ({ result: { r0: 0, c0: 0, h: 0, w: 0, dist: new Float32Array(0), codes: bands.map(() => new Uint16Array(0)), bytes: stats.bytes - b0 } });
-  if (codesIn.some((c) => !c || !c.length)) return empty();
+  const ok = (c) => c && c.length;
+  if (!ok(codesIn[0])) return empty();
+  for (let j = 1; j < bands.length; j++) {
+    if (ok(codesIn[j]) && codesIn[j].length === codesIn[0].length) continue;
+    if (!bands[j].optional) return empty();
+    codesIn[j] = new Uint16Array(codesIn[0].length).fill(NAN_CODE);
+  }
   const nIn = codesIn[0].length;
   const f = Math.round(Math.sqrt(nIn / (gy * gx))) || 1;   // 2: I band on the 750 m geolocation
   const by = gy * f, bx = gx * f;
@@ -196,7 +217,7 @@ function tone(a) {
   return 1;
 }
 
-export function swathMerge({ parts, grid, nb, q, rgb }) {
+export function swathMerge({ parts, grid, nb, q, rgb, all = false }) {
   const N = grid.nx * grid.ny, W = grid.nx;
   const codes = Array.from({ length: nb }, () => new Uint16Array(N).fill(NAN_CODE));
   const dist = new Float32Array(N).fill(Infinity);
@@ -218,6 +239,7 @@ export function swathMerge({ parts, grid, nb, q, rgb }) {
   if (!any) throw new Error(q === 'refl' ? 'No daylight in this slice: visible bands are empty on the night side (try an infrared band or the Day/Night Band)' : 'No data in this slice');
   const out = { codes: codes[0], grid };
   const transfer = [codes[0].buffer];
+  if (all) { out.bands = codes; transfer.push(...codes.slice(1).map((c) => c.buffer)); }
   const [lo, hi] = Q16[q], cs = (hi - lo) / 65534;
   if (q === 'lograd') {
     // Day/Night Band contrast from this slice: 2nd .. 99.7th percentile of log radiance
