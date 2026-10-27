@@ -153,8 +153,11 @@ npx wrangler deploy
 byte range at the edge for a day (data files never change), so repeat visits and replayed loops come
 from the nearest Cloudflare data centre. It also proxies the model-track files of NOMADS and Weather
 Lab and NHC's recon archive (`/tc`, see *Model tracks*) and serves a `config.js` that switches the app to both proxies.
-To use Cloudflare Pages instead, upload `web/` as is (it has a `_headers` file); it then reads NOAA
-directly, as on GitHub Pages.
+To use Cloudflare Pages instead, connect the repository or upload `web/` as is: its `_headers` file
+sets the headers and its `_worker.js` runs the same `/tc` proxy (model tracks, recon, SST fallback)
+and switches `config.js` to it, with no other setup; satellite data is read from NOAA directly, as on
+GitHub Pages. A GitHub Pages copy gets the GEFS / GEPS / FNV3 / WNV3 tracks and recon by setting
+`tcProxy` in `config.js` to that deployment's `https://<project>.pages.dev/tc?u=`.
 
 ## Low-end devices
 
