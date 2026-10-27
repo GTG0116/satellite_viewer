@@ -158,8 +158,10 @@ Lab and NHC's recon archive (`/tc`, see *Model tracks*) and serves a `config.js`
 To use Cloudflare Pages instead, connect the repository or upload `web/` as is: its `_headers` file
 sets the headers and its `_worker.js` runs the same `/tc` proxy (model tracks, recon, SST fallback)
 and switches `config.js` to it, with no other setup; satellite data is read from NOAA directly, as on
-GitHub Pages. A GitHub Pages copy gets the GEFS / GEPS / FNV3 / WNV3 tracks and recon by setting
-`tcProxy` in `config.js` to that deployment's `https://<project>.pages.dev/tc?u=`.
+GitHub Pages. A Git-connected Cloudflare **Worker** (Workers Builds) does the same through
+`wrangler.jsonc`, which names `_worker.js` as the Worker script; its `name` must match the Worker's
+(`satelliteviewer`). The GitHub Pages copy gets the GEFS / GEPS / FNV3 / WNV3 tracks and recon from
+that Worker's `/tc` (`config.js` picks it on `github.io`).
 
 ## Low-end devices
 

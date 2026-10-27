@@ -6,13 +6,13 @@
  * tcProxy: URL prefix for the model cyclone tracks of GEFS, GEPS, FNV3 and WNV3 (NOMADS and
  *          Google DeepMind Weather Lab send no CORS headers) and the Hurricane Hunter recon data
  *          (NHC's archive, no CORS either); the encoded file URL is appended.
- *          The Cloudflare Worker serves '/tc?u=' (CORS open, so a GitHub Pages copy can use
- *          'https://<your-worker>/tc?u='), as does tools/serve.py, and a Cloudflare Pages
- *          deployment of this folder (its _worker.js switches this on there by itself). On GitHub
- *          Pages set it to 'https://<project>.pages.dev/tc?u='. Empty: only ECMWF tracks and no
- *          recon data.
+ *          A Cloudflare deployment of this folder serves '/tc?u=' and switches this on by itself
+ *          (_worker.js, run by the Worker through wrangler.jsonc or by Pages), as do
+ *          cloudflare/worker.js and tools/serve.py. Its CORS is open, so the GitHub Pages copy
+ *          uses the Cloudflare Worker's. Empty: only ECMWF tracks and no recon data.
  */
+const TC_WORKER = 'https://satelliteviewer.gtg0116scratch.workers.dev/tc?u=';
 window.SATVIEW_CONFIG = {
   s3Proxy: '',
-  tcProxy: '',
+  tcProxy: location.hostname.endsWith('github.io') ? TC_WORKER : '',
 };

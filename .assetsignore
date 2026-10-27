@@ -1,2 +1,5 @@
-# Cloudflare Pages runs _worker.js; the Worker deployment (cloudflare/) must not publish it as a file
+# Cloudflare runs _worker.js (Pages, or the Worker via wrangler.jsonc); neither it nor the
+# deployment config is published as a file
 _worker.js
+wrangler.jsonc
+.wrangler

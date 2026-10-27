@@ -1,0 +1,13 @@
+// Cloudflare Workers deployment of this folder (the Git-connected "satelliteviewer" Worker):
+// the static files, plus _worker.js for /tc (the proxy for the model tracks, recon and the SST
+// fallback) and /config.js (switches the app to that proxy). The name must match the Worker's.
+{
+  "name": "satelliteviewer",
+  "main": "_worker.js",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": ".",
+    "binding": "ASSETS",
+    "run_worker_first": ["/tc", "/config.js"]
+  }
+}
