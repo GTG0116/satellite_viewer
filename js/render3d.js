@@ -989,11 +989,15 @@ class Viewer {
     this.bindControls();
     this.setWaiting();
     this.vr = new VRMode(this, THREE);
-    VRMode.supported().then((ok) => {
-      if (!ok || this.disposed) return;
+    // check again whenever a headset connects (e.g. Link started after the 3D view opened)
+    this.onXRDevice = () => VRMode.supported().then((ok) => {
+      if (!ok || this.disposed || this.vrShown) return;
+      this.vrShown = true;
       this.$('r3dVrBtn').classList.remove('hidden');
       this.$('r3dHelp').textContent += ' · VR headset: the goggles button';
     });
+    this.onXRDevice();
+    if (navigator.xr) navigator.xr.addEventListener('devicechange', this.onXRDevice);
   }
 
   // ---------------------------------------------------------------- DOM
@@ -2576,6 +2580,7 @@ class Viewer {
     ++this.seq;
     window.removeEventListener('keydown', this.onKeyDown, true);
     window.removeEventListener('keyup', this.onKeyUp, true);
+    if (navigator.xr) navigator.xr.removeEventListener('devicechange', this.onXRDevice);
     this.ro.disconnect();
     this.disposeScene();
     if (this.controls) this.controls.dispose();
