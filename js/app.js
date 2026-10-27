@@ -9,6 +9,7 @@ import { Volume } from './volume.js';
 import { loadPolarBox } from './polar.js';
 import { glmFlashes } from './glm.js';
 import * as OV from './overlays.js';
+import { ModelTracks } from './tracks.js';
 // settings, device tier, decode workers and the first frame's download started before the map loaded
 import { SETTINGS_KEY, device, tier, S, readHash, budget, currentPlan, pool, takeEarly, loopFrames } from './boot.js';
 
@@ -444,6 +445,7 @@ async function loadStorms() {
   } catch (e) { console.warn('cyclones', e); storms = { storms: [], fc: null, errors: [e.message] }; }
   OV.setStorms(map, storms.fc);
   renderStorms();
+  tracks?.regroup(); // names for the model tracks' storms
 }
 /** Cyclones show in live mode (the agencies publish current storms only). */
 function syncStorms() {
@@ -476,6 +478,16 @@ function addOverlays() {
   OV.addLayers(map, { font: ['Noto Sans Regular'], before: 'outline' });
   OV.showLayers(map, 'glm', S.glm);
   OV.showLayers(map, 'storms', S.storms && !S.archive);
+  tracks?.attach();
+}
+
+// ensemble model tracks (tracks.js): the controls under the storm list, any mode
+let tracks = null;
+function startTracks() {
+  tracks = new ModelTracks({ map, el: $('mtPanel'), state: S.mtracks, onChange: save, proxy: cfg.tcProxy || null,
+    names: () => (storms?.storms || []).map((s) => ({ name: s.name, now: s.now, t: s.t })),
+    fly: (lon, lat) => { sm.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 3.5) }); if (innerWidth < 640) togglePanel(false); },
+    font: ['Noto Sans Regular'], before: 'outline' });
 }
 
 // ------------------------------------------------------------------ custom sector box
@@ -926,6 +938,7 @@ layoutVars();
 
 // ------------------------------------------------------------------ boot
 bind();
+startTracks(); // its layers join the map in addOverlays()
 if (satInfo().retired && !S.archive) startArchive(true); // a link to a retired satellite opens its archive
 buildSectors(); buildProducts(); buildCmaps(); buildFrames(); syncArchive();
 selectTab(S.tab);

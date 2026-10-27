@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#060b14">
-<meta name="description" content="Live GOES, Himawari, GK2A and polar-orbiter (VIIRS, ATMS) satellite imagery on a 3D globe, decoded in your browser from the raw NOAA files, with GLM lightning and tropical cyclones.">
+<meta name="description" content="Live GOES, Himawari, GK2A and polar-orbiter (VIIRS, ATMS) satellite imagery on a 3D globe, decoded in your browser from the raw NOAA files, with GLM lightning, tropical cyclones and ensemble model tracks.">
 <title>Satellite Viewer</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -105,6 +105,7 @@
       <label class="row" id="glmRow">Window <select id="glmMin"><option value="1">1 min</option><option value="5">5 min</option><option value="10">10 min</option><option value="15">15 min</option></select><span id="glmInfo" class="mono val"></span></label>
       <label class="row check" title="Active tropical cyclones: NHC (Atlantic, East and Central Pacific) and JTWC (West Pacific, Indian Ocean, Southern Hemisphere) positions, past tracks and forecasts"><input type="checkbox" id="stormsChk" checked> Tropical cyclones (NHC / JTWC)</label>
       <div id="stormList" class="storm-list"></div>
+      <div id="mtPanel" class="mt-panel"></div>
     </section>
 
     <section data-tab="three">
@@ -141,7 +142,7 @@
       <div id="perfInfo" class="note mono"></div>
       <label class="row check"><input type="checkbox" id="fpsChk"> Show frame rate</label>
       <h3>About</h3>
-      <div class="note">Imagery is decoded in your browser from the raw NOAA Open Data Dissemination files (GOES ABI NetCDF‑4 / HDF5, Himawari HSD bzip2, GK2A AMI NetCDF‑4, VIIRS SDR HDF5, MiRS ATMS NetCDF‑4, GLM LCFA). Tropical cyclones: NHC (NOAA tropical map service) and JTWC. Map: MapLibre GL JS, OpenFreeMap / OpenStreetMap; terrain: AWS Terrain Tiles; 3D ground imagery: Esri; city lights: NASA GIBS. Nearest-pixel display unless <i>Smooth imagery</i> is on.</div>
+      <div class="note">Imagery is decoded in your browser from the raw NOAA Open Data Dissemination files (GOES ABI NetCDF‑4 / HDF5, Himawari HSD bzip2, GK2A AMI NetCDF‑4, VIIRS SDR HDF5, MiRS ATMS NetCDF‑4, GLM LCFA). Tropical cyclones: NHC (NOAA tropical map service) and JTWC; ensemble model tracks: ECMWF open data, NCEP ensemble tracker (GEFS, GEPS), Google DeepMind Weather Lab (FNV3, WNV3). Map: MapLibre GL JS, OpenFreeMap / OpenStreetMap; terrain: AWS Terrain Tiles; 3D ground imagery: Esri; city lights: NASA GIBS. Nearest-pixel display unless <i>Smooth imagery</i> is on.</div>
     </section>
   </div>
 </aside>

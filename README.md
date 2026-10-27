@@ -62,6 +62,17 @@ files): position, past and forecast track, NHC's cone, intensity colours, a stor
 each (`js/overlays.js`). All of these sources allow browser requests, so the overlays work on GitHub
 Pages too. Cyclones are current storms, shown in Live mode.
 
+**Model tracks** (*Display → Model tracks (ensembles)*, `js/tracks.js`, the same file as the desktop
+edition's): every member of the ECMWF ENS (51), GEFS (31), GEPS (21), FNV3 (50) and WNV3 (60–64)
+ensembles, with the mean and / or median, lines and points coloured by model, wind or pressure, a run
+picker (Latest, or a run of the last 3 days) and a *Through* slider that stops every track at that
+forecast hour. ECMWF's track file (BUFR, decoded here) comes from data.ecmwf.int / its AWS mirror, which
+allow browser requests. GEFS / GEPS (NCEP's ensemble tracker on NOMADS) and FNV3 / WNV3 (Google DeepMind
+Weather Lab) do not, so they go through a small proxy set as `tcProxy` in `config.js`: the Cloudflare
+Worker's `/tc` (and `tools/serve.py`'s) fetch only from those two hosts and cache an hour. Without a
+proxy (plain GitHub Pages) only ECMWF is available, unless `tcProxy` points at a deployed Worker
+(`'https://<your-worker>/tc?u='`; its CORS is open).
+
 **GK2A** (GEO-KOMPSAT-2A, 128.2°E) is read from `noaa-gk2a-pds`: one AMI L1B NetCDF-4 file per band
 (`AMI/L1B/FD` full disk every 10 min, `AMI/L1B/LA` the 1000 km Local Area over Korea every 2 min) with
 1375² deflate chunks, so a custom box downloads only the chunks it touches. Counts carry a 2-bit
@@ -108,7 +119,8 @@ its own the clouds are rendered coarser for the headset's mobile GPU.
 python tools/serve.py
 ```
 
-Then open http://127.0.0.1:8700. Any static file server works; `tools/serve.py` only turns caching off.
+Then open http://127.0.0.1:8700. Any static file server works; `tools/serve.py` turns caching off and
+adds the `/tc` proxy for the GEFS / GEPS / FNV3 / WNV3 model tracks.
 
 ## Deploy
 
@@ -125,7 +137,8 @@ npx wrangler deploy
 
 `cloudflare/worker.js` serves `web/` and proxies `/s3/<bucket>/<key>` to the NOAA buckets, caching every
 byte range at the edge for a day (data files never change), so repeat visits and replayed loops come
-from the nearest Cloudflare data centre. It also serves a `config.js` that switches the app to the proxy.
+from the nearest Cloudflare data centre. It also proxies the model-track files of NOMADS and Weather
+Lab (`/tc`, see *Model tracks*) and serves a `config.js` that switches the app to both proxies.
 To use Cloudflare Pages instead, upload `web/` as is (it has a `_headers` file); it then reads NOAA
 directly, as on GitHub Pages.
 
@@ -192,6 +205,7 @@ web/
   js/polar.js        polar orbiters: slice listings (VIIRS SDR, MiRS ATMS), slice grids, loading
   js/glm.js          GLM lightning: file listings and flashes before a time
   js/overlays.js     lightning + cyclone layers, NHC / JTWC fetching and parsing (shared with frontend/)
+  js/tracks.js       ensemble model tracks: sources, ECMWF BUFR decoder, mean / median, layers, panel (shared)
   js/render3d.js     three.js volumetric renderer
   js/vr3d.js         WebXR (VR headset) mode of the 3D view
   js/scenes.js       which files / chunks / segments a frame needs

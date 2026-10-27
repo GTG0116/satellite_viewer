@@ -1,11 +1,11 @@
 /* App-shell cache: the viewer's own files and the static map assets load from the cache, so a
  * repeat visit on a slow connection starts instantly. Satellite data is never cached here
  * (it changes every few minutes and is far too large). */
-const VERSION = 'satview-v6';
+const VERSION = 'satview-v7';
 const SHELL = ['./', 'index.html', 'css/app.css', 'config.js', 'icon.svg', 'manifest.webmanifest',
   'vendor/maplibre/maplibre-gl.mjs', 'vendor/maplibre/maplibre-gl-shared.mjs', 'vendor/maplibre/maplibre-gl-worker.mjs', 'vendor/maplibre/maplibre-gl.css',
   'js/boot.js', 'js/app.js', 'js/map.js', 'js/volume.js', 'js/catalog.js', 'js/geo.js', 'js/scenes.js', 'js/listing.js', 'js/pool.js', 'js/perf.js',
-  'js/glm.js', 'js/overlays.js', 'js/polar.js', 'js/tiles/router.js', 'js/tiles/tileworker.js', 'js/decode/worker.js', 'js/decode/hdf5.js', 'js/decode/inflate.js', 'js/decode/range.js',
+  'js/glm.js', 'js/overlays.js', 'js/tracks.js', 'js/polar.js', 'js/tiles/router.js', 'js/tiles/tileworker.js', 'js/decode/worker.js', 'js/decode/hdf5.js', 'js/decode/inflate.js', 'js/decode/range.js',
   'js/decode/bzip2.js', 'js/decode/hsd.js', 'js/decode/composites.js', 'js/decode/retrieve3d.js', 'js/decode/swath.js'];
 const STATIC_HOSTS = ['tiles.openfreemap.org']; // (GIBS city lights: cached by the tile workers)
 
@@ -20,7 +20,7 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET' || req.headers.has('range')) return;
   const url = new URL(req.url);
   const same = url.origin === location.origin;
-  if (same && url.pathname.includes('/s3/')) return;
+  if (same && (url.pathname.includes('/s3/') || url.pathname.endsWith('/tc'))) return; // data, not the app
   if (same) {
     // network first for the app itself (fresh after deploys), cache as offline fallback
     e.respondWith(fetch(req).then((r) => { if (r.ok) { const c = r.clone(); caches.open(VERSION).then((cc) => cc.put(req, c)); } return r; })
