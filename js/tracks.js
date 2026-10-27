@@ -1,10 +1,12 @@
-/* Ensemble model tracks of tropical cyclones: every member of five ensembles, their mean and
+/* Ensemble model tracks of tropical cyclones: every member of six ensembles, their mean and
  * median, drawn on a MapLibre or Mapbox GL map (the same file serves both editions, like
  * overlays.js).
  *
  *   ECMWF ENS  51 members (50 + control), 00/12Z to 360 h, 06/18Z to 144 h: ECMWF open data,
  *              one BUFR file per run (template 3 16 082, one message per storm, one subset per
  *              member), from data.ecmwf.int or its AWS mirror (both CORS).
+ *   AIFS ENS   ECMWF's machine-learned ensemble, 50 members + 2 unperturbed runs, every 6 h to
+ *              360 h: the same BUFR (a model-name element first), same hosts.
  *   GEFS       31 members (AC00 + AP01-30), 00/06/12/18Z to 384 h  } NCEP's ensemble tracker on
  *   GEPS       21 members (CC00 + CP01-20), 00/12Z to 384 h        } NOMADS (2 days kept), ATCF
  *   FNV3       Google DeepMind FNV3, 50 members, to ~330 h         } Google DeepMind Weather Lab,
@@ -15,6 +17,7 @@
  * carrying the storm still reach.
  */
 import { CATS, category } from './overlays.js';
+import { TrackChart } from './tchart.js';
 
 const ECMWF = 'https://ecmwf-forecasts.s3.amazonaws.com';
 const ECMWF_ORG = 'https://data.ecmwf.int/forecasts';
@@ -25,6 +28,7 @@ const H = 3600e3;
 
 export const MODELS = [
   { id: 'ecmwf', name: 'ECMWF ENS', short: 'ECMWF', color: '#ff6f61', cycles: [0, 6, 12, 18], proxy: false },
+  { id: 'aifs', name: 'ECMWF AIFS ENS', short: 'AIFS', color: '#f783ac', cycles: [0, 6, 12, 18], proxy: false },
   { id: 'gefs', name: 'GEFS', short: 'GEFS', color: '#4dabf7', cycles: [0, 6, 12, 18], proxy: true },
   { id: 'geps', name: 'GEPS', short: 'GEPS', color: '#c297ff', cycles: [0, 12], proxy: true },
   { id: 'fnv3', name: 'FNV3', short: 'FNV3', color: '#69db7c', cycles: [0, 6, 12, 18], proxy: true },
@@ -188,10 +192,13 @@ function parseEcmwf(u8, storms) {
       o += s1;
       if (hasS2) o += u24(o);
       const s3 = u24(o), nsub = dv.getUint16(o + 4), flags = u8[o + 6];
-      const desc = dv.getUint16(o + 7);
-      if (!(flags & 0x40) || desc !== ((3 << 14) | (16 << 8) | 82)) continue; // compressed 3 16 082 only
+      // compressed 3 16 082 only, after AIFS's 0 01 030 (numerical model identifier, 16 chars)
+      const nd = (s3 - 7) >> 1, descs = Array.from({ length: nd }, (_, k) => dv.getUint16(o + 7 + 2 * k));
+      const named = descs[0] === 30 + (1 << 8);
+      if (!(flags & 0x40) || descs[named ? 1 : 0] !== ((3 << 14) | (16 << 8) | 82)) continue;
       o += s3;
       const b = new Bits(u8, o + 4);
+      if (named) element(b, T(128), nsub);
       const head = EC_HEAD.map((d) => element(b, d, nsub));
       const reps = element(b, E(8), nsub)[0] || 0;
       const steps = [];
@@ -209,8 +216,9 @@ function parseEcmwf(u8, storms) {
         };
         add(0, head[17][j], head[18][j], head[19][j], head[23][j]);
         for (const st of steps) if (st[1][j] != null) add(st[1][j], st[3][j], st[4][j], st[5][j], st[9][j]);
-        const mem = head[6][j], ctl = head[7][j] === 0 || head[7][j] === 1;
-        if (pts.length) s.members.set(ctl ? 'control' : `member ${mem}`, pts);
+        // control: ensemble forecast type 0 (AIFS also has a type 1, its second unperturbed run)
+        const mem = head[6][j], id = head[7][j] === 0 ? 'control' : head[7][j] === 1 ? `control ${mem}` : `member ${mem}`;
+        if (pts.length) s.members.set(id, pts);
       }
     } catch (e) { console.warn('ECMWF track message', e); }
     finally { i = next > i ? next : i + 4; }
@@ -222,20 +230,23 @@ function parseEcmwf(u8, storms) {
 const SOURCES = {
   // the AWS mirror's listing says whether the run exists (data.ecmwf.int sends no CORS headers on
   // a 404); the file comes from data.ecmwf.int while it keeps it (a few days), else the mirror
-  ecmwf: async (t, o) => {
-    const d = ymd(t), h = hh(t), step = h === '00' || h === '12' ? 360 : 144;
-    const key = `${d}/${h}z/ifs/0p25/enfo/${d}${h}0000-${step}h-enfo-tf.bufr`, oo = { ...o, proxy: null };
-    const list = await get(`${ECMWF}/?list-type=2&max-keys=1&prefix=${encodeURIComponent(key)}`, oo);
-    if (!list.includes('<Key>')) throw new NotFound(key);
-    let u8 = null;
-    if (Date.now() - t < 3 * 24 * H) u8 = await get(`${ECMWF_ORG}/${key}`, { ...oo, binary: true }).catch((e) => { if (o.signal?.aborted) throw e; return null; });
-    return parseEcmwf(u8 || await get(`${ECMWF}/${key}`, { ...oo, binary: true }), new Map());
-  },
+  ecmwf: (t, o) => ecmwf('ifs', hh(t) === '00' || hh(t) === '12' ? 360 : 144, t, o),
+  aifs: (t, o) => ecmwf('aifs-ens', 360, t, o),
   gefs: (t, o) => nomads('gefs', 'aemn', ['ac00', ...Array.from({ length: 30 }, (_, i) => `ap${p2(i + 1)}`)], t, o),
   geps: (t, o) => nomads('cmce', 'cemn', ['cc00', ...Array.from({ length: 20 }, (_, i) => `cp${p2(i + 1)}`)], t, o),
   fnv3: (t, o) => wlab('FNV3', t, o),
   wnv3: (t, o) => wlab('WNV3', t, o),
 };
+
+async function ecmwf(model, step, t, o) {
+  const d = ymd(t), h = hh(t);
+  const key = `${d}/${h}z/${model}/0p25/enfo/${d}${h}0000-${step}h-enfo-tf.bufr`, oo = { ...o, proxy: null };
+  const list = await get(`${ECMWF}/?list-type=2&max-keys=1&prefix=${encodeURIComponent(key)}`, oo);
+  if (!list.includes('<Key>')) throw new NotFound(key);
+  let u8 = null;
+  if (Date.now() - t < 3 * 24 * H) u8 = await get(`${ECMWF_ORG}/${key}`, { ...oo, binary: true }).catch((e) => { if (o.signal?.aborted) throw e; return null; });
+  return parseEcmwf(u8 || await get(`${ECMWF}/${key}`, { ...oo, binary: true }), new Map());
+}
 
 /** NCEP ensemble tracker: one ATCF file per member; the mean's file is written last, so its
  *  presence says the run is complete. */
@@ -489,7 +500,8 @@ export class ModelTracks {
     this.groups = [];
     this.gen = 0;
     this.build();
-    setInterval(() => { if (this.st.on && this.st.run === 'latest' && !document.hidden) this.load(true); }, 30 * 60e3);
+    this.chart = new TrackChart(this, MODELS); // the intensity charts window (reopens if it was open)
+    setInterval(() => { if ((this.st.on || this.chart.isOpen) && this.st.run === 'latest' && !document.hidden) this.load(true); }, 30 * 60e3);
     if (this.st.on) this.load();
   }
 
@@ -505,7 +517,7 @@ export class ModelTracks {
   build() {
     const st = this.st;
     this.el.innerHTML = `
-      <label class="row check" title="Forecast tracks of every ensemble member (ECMWF, GEFS, GEPS, Google DeepMind FNV3 / WNV3), with the ensemble mean and median"><input type="checkbox" data-k="on"> Model tracks (ensembles)</label>
+      <label class="row check" title="Forecast tracks of every ensemble member (ECMWF ENS and AIFS, GEFS, GEPS, Google DeepMind FNV3 / WNV3), with the ensemble mean and median"><input type="checkbox" data-k="on"> Model tracks (ensembles)</label>
       <div class="mt-tools">
         <div class="chips small mt-models">${MODELS.map((m) => `<button type="button" data-m="${m.id}" title="${m.name}"><i style="background:${m.color}"></i>${m.short}</button>`).join('')}</div>
         <div class="row mt-show"><span>Show</span><span class="chips small">
@@ -519,12 +531,14 @@ export class ModelTracks {
         <div class="note mt-valid"></div>
         <label class="row">Storm <select data-k="storm"><option value="all">All storms</option></select></label>
         <label class="row check" title="Systems the ECMWF tracker finds forming during the forecast (not yet numbered by NHC / JTWC)"><input type="checkbox" data-k="genesis"> ECMWF new-system tracks</label>
+        <button type="button" class="btn mt-chartbtn" title="Charts of the storm's forecast wind, intensity class and pressure for any of the ensembles"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M4 4v16h16 M7 15l4-5 3 3 5-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Intensity charts</button>
         <div class="mt-legend"></div>
         <div class="mt-status"></div>
-        <div class="note">ECMWF open data (CC BY 4.0) · GEFS / GEPS: NCEP ensemble tracker · FNV3 / WNV3: Google DeepMind Weather Lab, experimental (<a href="${WLAB_TERMS}" target="_blank" rel="noopener">terms</a>). Not an official forecast: see NHC / JTWC.</div>
+        <div class="note">ECMWF ENS / AIFS: ECMWF open data (CC BY 4.0) · GEFS / GEPS: NCEP ensemble tracker · FNV3 / WNV3: Google DeepMind Weather Lab, experimental (<a href="${WLAB_TERMS}" target="_blank" rel="noopener">terms</a>). Not an official forecast: see NHC / JTWC.</div>
       </div>`;
     const q = (s) => this.el.querySelector(s);
     this.tools = q('.mt-tools');
+    q('.mt-chartbtn').onclick = () => this.chart.open(st.storm !== 'all' ? st.storm : null);
     const onBox = q('[data-k=on]');
     onBox.checked = st.on;
     onBox.onchange = () => { st.on = onBox.checked; this.changed(); if (this.map) showTrackLayers(this.map, st.on); if (st.on) this.load(); else this.render(); };
@@ -555,6 +569,12 @@ export class ModelTracks {
   }
 
   changed() { this.sync(); this.onChange(this.st); }
+
+  /** Models to load: the map's, and the charts' while their window is open. */
+  wanted() {
+    const w = new Set([...this.st.models, ...(this.chart?.isOpen ? this.chart.c.models : [])]);
+    return MODELS.map((m) => m.id).filter((m) => w.has(m));
+  }
 
   /** Runs of the last 3 days (refreshed as time passes); a chosen older run stays listed. */
   fillRuns() {
@@ -621,9 +641,10 @@ export class ModelTracks {
   /** Load every selected model's run (Latest: the newest that exists), then draw. */
   async load(fresh = false) {
     const st = this.st, gen = ++this.gen;
-    if (!st.on) return;
+    if (!st.on && !this.chart?.isOpen) return;
+    const wanted = this.wanted();
     this.fillRuns();
-    const jobs = st.models.map(async (m) => {
+    const jobs = wanted.map(async (m) => {
       const model = MODEL[m];
       if (model.proxy && !this.proxy) { this.runs.delete(m); this.setStatus(m, 'proxy', 'needs the data proxy (desktop app or Cloudflare deployment)'); return; }
       const want = st.run === 'latest' ? null : +st.run;
@@ -640,7 +661,7 @@ export class ModelTracks {
           try { run = { t, storms: await this.fetchRun(m, t) }; break; } catch (e) { if (!(e instanceof NotFound)) throw e; }
         }
         if (run && want == null) this.latest.set(m, { t: run.t, at: Date.now() });
-        if (gen !== this.gen && !this.st.models.includes(m)) return;
+        if (gen !== this.gen && !this.wanted().includes(m)) return;
         if (!run) {
           this.runs.delete(m);
           this.setStatus(m, 'none', want ? `${fmtRun(want)} not available${m === 'gefs' || m === 'geps' ? ' (NOMADS keeps 2 days)' : ''}` : 'no recent run found');
@@ -660,16 +681,17 @@ export class ModelTracks {
     // draw as each model arrives
     for (const j of jobs) j.then(() => { if (gen === this.gen) this.regroup(); });
     await Promise.all(jobs);
-    for (const m of this.runs.keys()) if (!st.models.includes(m)) this.runs.delete(m);
+    for (const m of this.runs.keys()) if (!this.wanted().includes(m)) this.runs.delete(m);
     if (gen === this.gen) this.regroup();
   }
 
   regroup() {
-    const runs = new Map([...this.runs].filter(([m]) => this.st.models.includes(m)));
+    const want = this.wanted(), runs = new Map([...this.runs].filter(([m]) => want.includes(m)));
     this.groups = groupStorms(runs, this.names() || []);
     this.fillStorms();
     this.hourLabel();
     this.render();
+    this.chart?.update();
   }
 
   fillStorms() {

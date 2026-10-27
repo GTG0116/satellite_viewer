@@ -63,10 +63,13 @@ each (`js/overlays.js`). All of these sources allow browser requests, so the ove
 Pages too. Cyclones are current storms, shown in Live mode.
 
 **Model tracks** (*Display → Model tracks (ensembles)*, `js/tracks.js`, the same file as the desktop
-edition's): every member of the ECMWF ENS (51), GEFS (31), GEPS (21), FNV3 (50) and WNV3 (60–64)
-ensembles, with the mean and / or median, lines and points coloured by model, wind or pressure, a run
+edition's): every member of the ECMWF ENS (51), ECMWF AIFS ENS (52), GEFS (31), GEPS (21), FNV3 (50)
+and WNV3 (60–64) ensembles, with the mean and / or median, lines and points coloured by model, wind or pressure, a run
 picker (Latest, or a run of the last 3 days) and a *Through* slider that stops every track at that
-forecast hour. ECMWF's track file (BUFR, decoded here) comes from data.ecmwf.int / its AWS mirror, which
+forecast hour. *Intensity charts* opens a window (`js/tchart.js`, full screen on phones) with the
+maximum wind (category thresholds marked), the intensity distribution of one ensemble and the minimum
+pressure of a storm, for any number of ensembles, each with members / mean / median / 10–90 % spread
+switchable, and a hover readout. ECMWF's track files (BUFR, decoded here) comes from data.ecmwf.int / its AWS mirror, which
 allow browser requests. GEFS / GEPS (NCEP's ensemble tracker on NOMADS) and FNV3 / WNV3 (Google DeepMind
 Weather Lab) do not, so they go through a small proxy set as `tcProxy` in `config.js`: the Cloudflare
 Worker's `/tc` (and `tools/serve.py`'s) fetch only from those two hosts and cache an hour. Without a
@@ -206,6 +209,7 @@ web/
   js/glm.js          GLM lightning: file listings and flashes before a time
   js/overlays.js     lightning + cyclone layers, NHC / JTWC fetching and parsing (shared with frontend/)
   js/tracks.js       ensemble model tracks: sources, ECMWF BUFR decoder, mean / median, layers, panel (shared)
+  js/tchart.js       ensemble intensity charts: wind, intensity distribution, pressure (shared)
   js/render3d.js     three.js volumetric renderer
   js/vr3d.js         WebXR (VR headset) mode of the 3D view
   js/scenes.js       which files / chunks / segments a frame needs

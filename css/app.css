@@ -133,6 +133,55 @@ input[type=search], input[type=datetime-local], input[type=number] { background:
 .mt-tip { position: absolute; z-index: 5; pointer-events: none; max-width: 240px; padding: 6px 9px; border-radius: 8px; font-size: 12px; line-height: 1.45;
   background: rgba(8, 13, 24, .93); border: 1px solid var(--line); color: var(--text); }
 .mt-tip span { color: var(--muted); }
+/* ensemble intensity charts (tchart.js): a floating window over the map */
+.mt-chartbtn { width: 100%; justify-content: center; margin: 8px 0 4px; }
+.tc-win { position: fixed; z-index: 40; left: 16px; top: 64px; width: min(760px, calc(100vw - 32px)); height: min(860px, calc(100vh - 200px));
+  min-width: 340px; min-height: 260px; resize: both; overflow: hidden; display: flex; flex-direction: column;
+  background: rgba(13, 18, 28, 0.96); border: 1px solid rgba(160, 190, 230, 0.2); border-radius: 14px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  color: #e6ebf3; font-size: 12.5px; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.tc-head { display: flex; align-items: center; gap: 10px; padding: 9px 10px 8px 14px; border-bottom: 1px solid rgba(160, 190, 230, 0.14); cursor: move; user-select: none; flex: none; }
+.tc-head b { font-size: 13.5px; font-weight: 650; white-space: nowrap; }
+.tc-storm { flex: 1; min-width: 0; max-width: 340px; }
+.tc-close { margin-left: auto; width: 30px; height: 30px; border-radius: 8px; border: 1px solid rgba(160, 190, 230, 0.18); background: transparent; color: #c9d3e3; font-size: 18px; line-height: 1; cursor: pointer; }
+.tc-close:hover { background: rgba(255, 255, 255, 0.07); }
+.tc-models { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 12px 4px; flex: none; }
+.tc-models button, .tc-tog button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; min-height: 26px; border-radius: 999px; font-size: 12px;
+  border: 1px solid rgba(160, 190, 230, 0.22); background: transparent; color: #9aa6b8; cursor: pointer; }
+.tc-models button i { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.45); opacity: 0.5; }
+.tc-models button.on, .tc-tog button.on { color: #fff; border-color: #4cb5ff; background: rgba(76, 181, 255, 0.18); }
+.tc-models button.on i { opacity: 1; }
+.tc-key { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 2px 14px 6px; color: #8a96a9; font-size: 11px; flex: none; }
+.tc-key span { display: inline-flex; align-items: center; gap: 5px; }
+.tc-band { display: inline-block; width: 18px; height: 9px; border-radius: 2px; background: rgba(201, 211, 227, 0.28); }
+.tc-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 0 12px 10px; scrollbar-width: thin; position: relative; }
+.tc-sec { margin-top: 8px; }
+.tc-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 2px; }
+.tc-title b { font-size: 12px; font-weight: 650; color: #b8c4d6; letter-spacing: 0.2px; }
+.tc-tog { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+.tc-tog button { min-height: 24px; padding: 2px 8px; font-size: 11.5px; }
+.tc-dist { margin-left: auto; max-width: 55%; }
+.tc-plot { position: relative; min-height: 60px; }
+.tc-svg { display: block; overflow: visible; }
+.tc-grid { stroke: rgba(160, 190, 230, 0.1); stroke-width: 1; }
+.tc-ax { fill: #8a96a9; font-size: 10.5px; font-family: inherit; }
+.tc-cat { stroke-width: 1; stroke-dasharray: 3 3; stroke-opacity: 0.55; }
+.tc-catl { font-size: 10px; font-weight: 600; }
+.tc-thru { stroke: #ffffff; stroke-opacity: 0.55; stroke-width: 1; stroke-dasharray: 4 3; }
+.tc-cursor { position: absolute; top: 8px; bottom: 22px; width: 1px; background: rgba(255, 255, 255, 0.55); pointer-events: none; }
+.tc-cats { display: flex; flex-wrap: wrap; gap: 3px 10px; font-size: 10.5px; color: #8a96a9; margin: 2px 0 0 40px; }
+.tc-cats span { display: inline-flex; align-items: center; gap: 4px; }
+.tc-cats i { width: 9px; height: 9px; border-radius: 2px; }
+.tc-status { margin-top: 8px; }
+.tc-empty { padding: 26px 0; text-align: center; color: #6b778a; }
+.tc-tip { position: absolute; z-index: 2; pointer-events: none; max-width: 420px; padding: 7px 10px; border-radius: 8px; font-size: 11.5px; line-height: 1.5;
+  background: rgba(6, 10, 18, 0.95); border: 1px solid rgba(160, 190, 230, 0.22); }
+.tc-tip div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tc-tip i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+.tc-tipd { color: #9aa6b8; }
+@media (max-width: 700px) {
+  .tc-win { inset: 0; width: auto; height: auto; border-radius: 0; resize: none; }
+  .tc-head { cursor: default; }
+}
 .prod .pn { font-size: 13px; }
 .prod .pd { font-size: 11px; color: var(--muted); display: block; }
 .prod .sz { margin-left: auto; font-size: 11px; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
