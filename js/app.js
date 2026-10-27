@@ -10,6 +10,9 @@ import { loadPolarBox } from './polar.js';
 import { glmFlashes } from './glm.js';
 import * as OV from './overlays.js';
 import { ModelTracks } from './tracks.js';
+import { Recon } from './recon.js';
+import { Sst } from './sst.js';
+import { CycloneStyle, MapStyle } from './mapstyle.js';
 // settings, device tier, decode workers and the first frame's download started before the map loaded
 import { SETTINGS_KEY, device, tier, S, readHash, budget, currentPlan, pool, takeEarly, loopFrames } from './boot.js';
 
@@ -227,6 +230,7 @@ async function show(i, { blend = true } = {}) {
   updateOutline(f);
   updateLegend(f);
   updateGlm(f.time);
+  overlayTime(f);
   vol.frameChanged(() => playing);
   await sm.showFrame(f, { blendMs: ms });
 }
@@ -467,7 +471,7 @@ function renderStorms() {
     b.className = 'storm';
     b.innerHTML = `<i style="background:${c.color}"></i><span><b></b><small></small></span>`;
     b.querySelector('b').textContent = s.name;
-    b.querySelector('small').textContent = `${s.agency} · ${s.kt} kt${s.mb ? ` · ${s.mb} mb` : ''} · ${c.label}`;
+    b.querySelector('small').textContent = `${s.agency} · ${OV.fmtWind(s.kt)}${s.mb ? ` · ${s.mb} mb` : ''} · ${c.label}`;
     b.onclick = () => { sm.flyTo({ center: s.now, zoom: Math.max(map.getZoom(), 4.5) }); if (innerWidth < 640) togglePanel(false); };
     el.appendChild(b);
   }
@@ -479,6 +483,43 @@ function addOverlays() {
   OV.showLayers(map, 'glm', S.glm);
   OV.showLayers(map, 'storms', S.storms && !S.archive);
   tracks?.attach();
+  recon?.attach();
+  sst?.attach();
+  mapStyle?.attach();
+}
+
+// intensity colours and the storms' style (mapstyle.js): applied before anything is drawn
+new CycloneStyle({ el: $('csPanel'), state: S.tcstyle, onChange: save });
+OV.onStyle(() => renderStorms());
+
+// Hurricane Hunter recon (recon.js, over the storms), Coral Reef Watch SST (sst.js, behind the
+// imagery under the night shading, or over it under the lines), base-map colours (mapstyle.js)
+let recon = null, sst = null, mapStyle = null;
+function startExtras() {
+  const fly = (lon, lat, z) => { sm.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), z) }); if (innerWidth < 640) togglePanel(false); };
+  recon = new Recon({ map, el: $('rcPanel'), state: S.recon, onChange: save, proxy: cfg.tcProxy || null, font: ['Noto Sans Regular'], before: 'outline',
+    fly: (lon, lat) => fly(lon, lat, 5.5) });
+  sst = new Sst({ map, el: $('sstPanel'), state: S.sst, onChange: save, proxy: cfg.tcProxy || null, under: 'night', over: 'graticule' });
+  const line = (key, name, layers) => ({ key, name, layers, color: 'line-color', scale: 'line-width', scaleName: 'width' });
+  const labels = ['label-city', 'label-state', 'label-country'];
+  mapStyle = new MapStyle({ map, el: $('msPanel'), state: S.mapstyle, onChange: save, grid: 'graticule', items: [
+    line('coast', 'Coastlines', ['coast']),
+    line('country', 'Country borders', ['boundary-country']),
+    line('state', 'State lines', ['boundary-state']),
+    line('grid', 'Lat / lon grid', ['graticule']),
+    { key: 'water', name: 'Ocean', layers: ['water'], color: 'fill-color' },
+    { key: 'land', name: 'Land / background', layers: ['background'], color: 'background-color' },
+    { key: 'labels', name: 'Place labels', layers: labels, color: 'text-color', scale: 'text-size', scaleLayout: true, scaleDefault: 16 },
+    { key: 'halo', name: 'Label halo', layers: labels, color: 'text-halo-color', scale: 'text-halo-width', scaleName: 'width' },
+    { key: 'night', name: 'Night side', layers: ['night'], color: 'fill-color', scale: 'fill-opacity', scaleName: 'strength', tip: 'Colour and strength of the night shading' },
+  ] });
+}
+
+/** Recon and SST follow the shown frame: the trail before its time, the SST of its day. */
+function overlayTime(f) {
+  const t = f.time.getTime(), ts = cur.scans.map((s) => +s.t).filter(isFinite);
+  recon?.setTime(t, { start: ts.length ? Math.min(...ts) : t, end: ts.length ? Math.max(...ts) : t, live: !S.archive });
+  sst?.setTime(t, { live: !S.archive });
 }
 
 // ensemble model tracks (tracks.js): the controls under the storm list, any mode
@@ -939,6 +980,7 @@ layoutVars();
 // ------------------------------------------------------------------ boot
 bind();
 startTracks(); // its layers join the map in addOverlays()
+startExtras();
 if (satInfo().retired && !S.archive) startArchive(true); // a link to a retired satellite opens its archive
 buildSectors(); buildProducts(); buildCmaps(); buildFrames(); syncArchive();
 selectTab(S.tab);

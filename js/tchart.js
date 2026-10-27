@@ -3,7 +3,7 @@
  * distribution over time, and minimum pressure. Any number of the loaded ensembles at once;
  * wind and pressure each show members, mean, median and spread (10th-90th percentile) or not.
  * Times are valid times, so runs of different hours line up. */
-import { CATS, category } from './overlays.js';
+import { CATS, category, onStyle } from './overlays.js';
 
 const H = 3600e3;
 const p2 = (n) => String(n).padStart(2, '0');
@@ -93,7 +93,9 @@ export class TrackChart {
       };
     }
     for (const b of w.querySelectorAll('.tc-tog [data-k]')) b.onclick = () => { const o = this.c[b.dataset.v]; o[b.dataset.k] = !o[b.dataset.k]; this.save(); this.sync(); this.draw(); };
-    q('.tc-cats').innerHTML = [...CATS].reverse().map((c) => `<span><i style="background:${c.color}"></i>${c.id === 'td' ? 'TD' : c.id === 'ts' ? 'TS' : c.label}</span>`).join('') + `<span><i style="background:${GONE}"></i>no storm</span>`;
+    this.catsKey = () => { q('.tc-cats').innerHTML = [...CATS].reverse().map((c) => `<span><i style="background:${c.color}"></i>${c.id === 'td' ? 'TD' : c.id === 'ts' ? 'TS' : c.label}</span>`).join('') + `<span><i style="background:${GONE}"></i>no storm</span>`; };
+    this.catsKey();
+    onStyle(() => { this.catsKey(); if (this.c.open) this.draw(); }); // intensity colours changed
     // drag by the header (wide screens; on phones the window fills the screen)
     q('.tc-head').addEventListener('pointerdown', (e) => {
       if (e.target.closest('select, button') || innerWidth < 700) return;

@@ -291,7 +291,9 @@ export class SatMap {
 
   _addLayer(f, opacity) {
     const map = this.map, id = `sat-${(this._lid = (this._lid || 0) + 1)}-${f.id}`, url = this._tileUrl(f);
-    const spec = { type: 'raster', tiles: [url], tileSize: this.tileSize, maxzoom: this._maxzoom(f) };
+    // tiles go 4 zoom levels past the native resolution: overzoomed tiles would snap every pixel
+    // edge to their coarse tile-pixel grid (notched, stair-stepped pixels when zoomed in)
+    const spec = { type: 'raster', tiles: [url], tileSize: this.tileSize, maxzoom: Math.min(16, this._maxzoom(f) + 4) };
     const b = gridBounds(f.grid); if (b) spec.bounds = b;
     map.addSource(id, spec);
     map.addLayer({ id, type: 'raster', source: id,

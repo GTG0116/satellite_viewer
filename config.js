@@ -4,9 +4,11 @@
  *          On Cloudflare, set it to '/s3' to go through the bundled Worker, which adds edge
  *          caching of the immutable data files (see cloudflare/worker.js).
  * tcProxy: URL prefix for the model cyclone tracks of GEFS, GEPS, FNV3 and WNV3 (NOMADS and
- *          Google DeepMind Weather Lab send no CORS headers); the encoded file URL is appended.
+ *          Google DeepMind Weather Lab send no CORS headers) and the Hurricane Hunter recon data
+ *          (NHC's archive, no CORS either); the encoded file URL is appended.
  *          The Cloudflare Worker serves '/tc?u=' (CORS open, so a GitHub Pages copy can use
- *          'https://<your-worker>/tc?u='), as does tools/serve.py. Empty: only ECMWF tracks.
+ *          'https://<your-worker>/tc?u='), as does tools/serve.py. Empty: only ECMWF tracks and
+ *          no recon data.
  */
 window.SATVIEW_CONFIG = {
   s3Proxy: '',

@@ -76,6 +76,17 @@ Worker's `/tc` (and `tools/serve.py`'s) fetch only from those two hosts and cach
 proxy (plain GitHub Pages) only ECMWF is available, unless `tcProxy` points at a deployed Worker
 (`'https://<your-worker>/tc?u='`; its CORS is open).
 
+**Hurricane Hunters** (*Display → Hurricane Hunters (recon)*, `js/recon.js`, shared with the desktop
+edition): NOAA and Air Force Reserve recon from NHC's archive (HDOB flight-level / SFMR observations,
+center fixes, dropsondes), coloured by any variable, with wind barbs and the aircraft, following the
+shown frame (Archive mode too). NHC's archive sends no CORS headers, so it needs `tcProxy` like
+GEFS / GEPS. **Sea surface temperature** (`js/sst.js`): NOAA Coral Reef Watch CoralTemp SST or
+anomaly (daily, 5 km) from ERDDAP, behind the imagery or over it, with its own colour tables, range,
+26.5 °C contour and cursor readout. **Cyclone colours & style** and **Map colours & lines**
+(`js/mapstyle.js`): the intensity colour table shared by storms, model tracks, charts and recon,
+the storms' line / cone / point / label style and wind units, and base-map line, fill and label
+colours, opacity and widths.
+
 **GK2A** (GEO-KOMPSAT-2A, 128.2°E) is read from `noaa-gk2a-pds`: one AMI L1B NetCDF-4 file per band
 (`AMI/L1B/FD` full disk every 10 min, `AMI/L1B/LA` the 1000 km Local Area over Korea every 2 min) with
 1375² deflate chunks, so a custom box downloads only the chunks it touches. Counts carry a 2-bit
@@ -141,7 +152,7 @@ npx wrangler deploy
 `cloudflare/worker.js` serves `web/` and proxies `/s3/<bucket>/<key>` to the NOAA buckets, caching every
 byte range at the edge for a day (data files never change), so repeat visits and replayed loops come
 from the nearest Cloudflare data centre. It also proxies the model-track files of NOMADS and Weather
-Lab (`/tc`, see *Model tracks*) and serves a `config.js` that switches the app to both proxies.
+Lab and NHC's recon archive (`/tc`, see *Model tracks*) and serves a `config.js` that switches the app to both proxies.
 To use Cloudflare Pages instead, upload `web/` as is (it has a `_headers` file); it then reads NOAA
 directly, as on GitHub Pages.
 
@@ -210,6 +221,9 @@ web/
   js/overlays.js     lightning + cyclone layers, NHC / JTWC fetching and parsing (shared with frontend/)
   js/tracks.js       ensemble model tracks: sources, ECMWF BUFR decoder, mean / median, layers, panel (shared)
   js/tchart.js       ensemble intensity charts: wind, intensity distribution, pressure (shared)
+  js/recon.js        Hurricane Hunter recon: HDOB / VDM / dropsonde parsing, layers, panel (shared)
+  js/sst.js          Coral Reef Watch SST / anomaly from ERDDAP, coloured image layer (shared)
+  js/mapstyle.js     intensity colours, cyclone style and base-map style panels (shared)
   js/render3d.js     three.js volumetric renderer
   js/vr3d.js         WebXR (VR headset) mode of the 3D view
   js/scenes.js       which files / chunks / segments a frame needs

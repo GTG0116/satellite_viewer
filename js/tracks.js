@@ -16,7 +16,7 @@
  * computed here from the members, at each forecast hour that at least 40 % of the members
  * carrying the storm still reach.
  */
-import { CATS, category } from './overlays.js';
+import { CATS, category, onStyle, fmtWind } from './overlays.js';
 import { TrackChart } from './tchart.js';
 
 const ECMWF = 'https://ecmwf-forecasts.s3.amazonaws.com';
@@ -500,6 +500,7 @@ export class ModelTracks {
     this.groups = [];
     this.gen = 0;
     this.build();
+    onStyle(() => { this.legend(); this.render(); }); // intensity colours / wind units changed
     this.chart = new TrackChart(this, MODELS); // the intensity charts window (reopens if it was open)
     setInterval(() => { if ((this.st.on || this.chart.isOpen) && this.st.run === 'latest' && !document.hidden) this.load(true); }, 30 * 60e3);
     if (this.st.on) this.load();
@@ -736,7 +737,7 @@ export class ModelTracks {
       if (run) h += `<br><span>${fmtRun(run.t)} run</span>`;
       if (q.tau != null && q.t) {
         h += `<br>+${q.tau} h · ${fmtValid(q.t)}`;
-        const kt = q.kt >= 0 ? `${q.kt} kt (${category(q.kt).label})` : '', mb = q.mb >= 0 ? `${q.mb} hPa` : '';
+        const kt = q.kt >= 0 ? `${fmtWind(q.kt)} (${category(q.kt).label})` : '', mb = q.mb >= 0 ? `${q.mb} hPa` : '';
         if (kt || mb) h += `<br>${[kt, mb].filter(Boolean).join(' · ')}`;
       }
       const g = this.groups.find((x) => x.id === q.g);
