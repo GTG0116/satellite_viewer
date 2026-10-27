@@ -79,8 +79,10 @@ proxy (plain GitHub Pages) only ECMWF is available, unless `tcProxy` points at a
 **Hurricane Hunters** (*Display → Hurricane Hunters (recon)*, `js/recon.js`, shared with the desktop
 edition): NOAA and Air Force Reserve recon from NHC's archive (HDOB flight-level / SFMR observations,
 center fixes, dropsondes), coloured by any variable, with wind barbs and the aircraft, following the
-shown frame (Archive mode too). NHC's archive sends no CORS headers, so it needs `tcProxy` like
-GEFS / GEPS. **Sea surface temperature** (`js/sst.js`): NOAA Coral Reef Watch CoralTemp SST or
+shown frame (Archive mode too); clicking a flight opens its charts (wind / SFMR, pressure with fixes
+and dropsondes, temperature, altitude, rain, against time or distance from the center) and clicking a
+dropsonde its Skew-T with the derived numbers (`js/reconcharts.js`). NHC's archive sends no CORS
+headers, so it needs `tcProxy` like GEFS / GEPS. **Sea surface temperature** (`js/sst.js`): NOAA Coral Reef Watch CoralTemp SST or
 anomaly (daily, 5 km) from ERDDAP, behind the imagery or over it, with its own colour tables, range,
 26.5 °C contour and cursor readout. **Cyclone colours & style** and **Map colours & lines**
 (`js/mapstyle.js`): the intensity colour table shared by storms, model tracks, charts and recon,
@@ -225,6 +227,7 @@ web/
   js/tracks.js       ensemble model tracks: sources, ECMWF BUFR decoder, mean / median, layers, panel (shared)
   js/tchart.js       ensemble intensity charts: wind, intensity distribution, pressure (shared)
   js/recon.js        Hurricane Hunter recon: HDOB / VDM / dropsonde parsing, layers, panel (shared)
+  js/reconcharts.js  recon flight charts and dropsonde Skew-T (shared)
   js/sst.js          Coral Reef Watch SST / anomaly from ERDDAP, coloured image layer (shared)
   js/mapstyle.js     intensity colours, cyclone style and base-map style panels (shared)
   js/render3d.js     three.js volumetric renderer

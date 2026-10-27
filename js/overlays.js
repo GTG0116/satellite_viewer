@@ -48,6 +48,7 @@ const style = { ...STORM_STYLE };
 // wind speeds in the chosen unit (labels, lists, tooltips)
 const UNITS = { kt: [1, 'kt'], mph: [1.15078, 'mph'], kmh: [1.852, 'km/h'], ms: [0.514444, 'm/s'] };
 export const unitLabel = (u = style.units) => (UNITS[u] || UNITS.kt)[1];
+export const toUnit = (kt, u = style.units) => (kt == null ? null : kt * (UNITS[u] || UNITS.kt)[0]);
 export function fmtWind(kt, u = style.units) {
   if (kt == null || !isFinite(kt)) return '—';
   const [f, name] = UNITS[u] || UNITS.kt;

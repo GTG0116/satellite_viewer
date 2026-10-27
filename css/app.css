@@ -490,3 +490,38 @@ details.fold h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .7
 .ms-grid select { font-size: 12px; padding: 2px 3px; }
 .ms-reset { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0; }
 .ms-reset.on { color: var(--accent); }
+/* Hurricane Hunter flight charts and dropsonde Skew-T (reconcharts.js), on the .tc-win window */
+.rc-row { display: flex; align-items: center; gap: 4px; }
+.rc-row .storm { flex: 1; min-width: 0; }
+.rc-chartbtn { flex: none; width: 30px; height: 30px; border-radius: 8px; border: 1px solid rgba(160, 190, 230, 0.18); background: transparent; color: #9fb4cc; cursor: pointer; display: grid; place-items: center; }
+.rc-chartbtn:hover { color: #fff; background: rgba(255, 255, 255, 0.06); }
+.rc-flight { flex: 1; min-width: 0; max-width: 420px; }
+.rc-top { color: #9aa6b8; font-size: 11.5px; margin-top: 8px; }
+.rc-sum b { color: #e6ebf3; }
+.rc-xsel { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.rc-key { display: flex; gap: 12px; margin-left: auto; font-size: 10.5px; color: #8a96a9; }
+.rc-key span { display: inline-flex; align-items: center; gap: 5px; }
+.rc-k-fix { width: 8px; height: 8px; background: #ffe066; transform: rotate(45deg); }
+.rc-k-drop { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 8px solid #9be7ff; }
+.rc-fixm { fill: #ffe066; stroke: rgba(3, 6, 12, 0.9); stroke-width: 1.2; }
+.rc-dropm { fill: #9be7ff; stroke: rgba(3, 6, 12, 0.9); stroke-width: 1.2; cursor: pointer; }
+.rc-dropm:hover { fill: #fff; }
+.tc-tog button i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.sd-win { width: min(980px, calc(100vw - 32px)); }
+.sd-sub { font-size: 12px; color: #9aa6b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.rw-ctl { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.sd-nav { width: 28px; height: 28px; border-radius: 8px; border: 1px solid rgba(160, 190, 230, 0.18); background: transparent; color: #c9d3e3; font-size: 17px; cursor: pointer; flex: none; }
+.sd-nav:disabled { opacity: 0.3; cursor: default; }
+.sd-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(250px, 1fr); gap: 14px; padding-top: 10px; }
+.sd-plot { position: relative; min-height: 420px; }
+.sd-plot canvas { display: block; cursor: crosshair; }
+.sd-read { font-size: 11px; color: #c9d3e3; min-height: 30px; padding: 4px 2px; line-height: 1.5; }
+.sd-tab { width: 100%; border-collapse: collapse; font-size: 12px; }
+.sd-tab th { text-align: left; font-weight: 500; color: #8a96a9; padding: 3px 8px 3px 0; white-space: nowrap; vertical-align: top; }
+.sd-tab td { padding: 3px 0; color: #e6ebf3; }
+.sd-lv { font-size: 11px; }
+.sd-lv th, .sd-lv td { padding: 2px 6px 2px 0; text-align: right; }
+.sd-levels, .sd-raw { margin-top: 10px; }
+.sd-levels summary, .sd-raw summary { cursor: pointer; color: #9fb4cc; font-size: 12px; }
+.sd-raw pre { font-size: 10.5px; line-height: 1.35; white-space: pre-wrap; word-break: break-all; color: #c9d3e3; background: rgba(255, 255, 255, 0.03); padding: 8px; border-radius: 8px; }
+@media (max-width: 760px) { .sd-grid { grid-template-columns: 1fr; } .rc-key { margin-left: 0; } }

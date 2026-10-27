@@ -12,10 +12,12 @@
  * www.nhc.noaa.gov/archive/recon/<year>/<product>/ sends no CORS headers: its directory listings
  * (filtered to a day by Apache's ?P= pattern) and the messages come through the same small proxy
  * as the model tracks (`proxy`). The observations follow the shown frame: each frame shows the
- * flights during the chosen trail before its time, so a loop animates the aircraft.
+ * flights during the chosen trail before its time, so a loop animates the aircraft. Clicking a
+ * flight opens its charts, clicking a dropsonde its Skew-T (reconcharts.js).
  */
 import { CATS, category, fmtWind, onStyle } from './overlays.js';
 import { PBINS } from './tracks.js';
+import { FlightChart, SondeView } from './reconcharts.js';
 
 const ARCHIVE = 'https://www.nhc.noaa.gov/archive/recon';
 const BASINS = [
@@ -144,7 +146,7 @@ export function parseVdm(txt, fileT) {
     mslp: mb ? +mb[1] : null, level: lvl ? `${lvl[1]} hPa ${lvl[2]} m` : null, eye: na(item('F')), shape: na(item('G')),
     sfcIn: kt(item('H')), flIn: kt(item('J')), sfcOut: kt(item('L')), flOut: kt(item('N')),
     maxfl: maxfl ? { kt: +maxfl[1], brg: +maxfl[2], nm: +maxfl[3] } : null,
-    ac: u ? u[1] : '', mission: u ? u[2] : '', storm: stormName(u ? u[3] : ''), ob: u ? +u[4] : null };
+    ac: u ? u[1] : '', mission: u ? u[2] : '', storm: stormName(u ? u[3] : ''), ob: u ? +u[4] : null, raw: txt.trim() };
 }
 
 /** TEMP DROP: parts XXAA / XXBB, "61616 NOAA9 WXWXA TRAIN OB 01", "62626 ... REL ... SPG ... =" */
@@ -178,9 +180,91 @@ export function parseDrop(txt, fileT) {
     t = dayStart(fileT) + (+hms.slice(0, 2) * 3600 + +hms.slice(2, 4) * 60 + (+hms.slice(4, 6) || 0)) * 1e3;
     if (t > fileT + 30 * 60e3) t -= DAY;
   }
+  const dlm = /DLM WND\s*(\d{5})\s*(\d{3})(\d{3})/.exec(rmk);
+  const at = (x) => (x && x.hms ? (() => {
+    let v = dayStart(fileT) + (+x.hms.slice(0, 2) * 3600 + +x.hms.slice(2, 4) * 60 + (+x.hms.slice(4, 6) || 0)) * 1e3;
+    if (v > fileT + 30 * 60e3) v -= DAY;
+    return v;
+  })() : null);
   return { kind: 'drop', t, lat, lon, p, wd: wind?.wd ?? null, ws: wind?.ws ?? null, mbl, wl150, splash: !!spg,
     eye: /\b(EYE|CENTER)\b/.test(rmk), eyewall: /EYEWALL/.test(rmk),
-    ac: id ? id[1] : '', mission: id ? id[2] : '', storm: stormName(id ? id[3] : ''), ob: id ? +id[4] : null };
+    ac: id ? id[1] : '', mission: id ? id[2] : '', storm: stormName(id ? id[3] : ''), ob: id ? +id[4] : null,
+    rel: rel ? { lat: rel.lat, lon: rel.lon, t: at(rel) } : null, spg: spg ? { lat: spg.lat, lon: spg.lon, t: at(spg) } : null,
+    dlm: dlm ? { ...dddff(dlm[1]), top: hpa3(dlm[3]), bot: hpa3(dlm[2]) } : null,
+    remarks: rmk.replace(/\s+/g, ' ').trim(), levels: soundingLevels(aa, bb, txt), raw: txt.trim() };
+}
+
+const hpa3 = (s) => { const v = +s; return v < 100 ? v + 1000 : v; };
+
+/** "TTTDD": temperature in tenths (an odd tenths digit means below zero), dew-point depression
+ *  (00-50 tenths of a degree, 56-99 whole degrees + 50). */
+function ttdd(g) {
+  if (!g || !/^\d{3}/.test(g)) return { T: null, Td: null };
+  let T = +g.slice(0, 3) / 10;
+  if (+g[2] % 2) T = -T;
+  const dd = g.slice(3, 5);
+  let Td = null;
+  if (/^\d\d$/.test(dd)) { const d = +dd; const dep = d <= 50 ? d / 10 : d >= 56 ? d - 50 : null; if (dep != null) Td = +(T - dep).toFixed(1); }
+  return { T, Td };
+}
+
+// standard levels of TEMP part A (their height groups decoded as the WMO code has them)
+const STD = { '00': 1000, 92: 925, 85: 850, 70: 700, 50: 500, 40: 400, 30: 300, 25: 250, 20: 200, 15: 150, 10: 100 };
+function stdHeight(p, s) {
+  if (!/^\d{3}$/.test(s)) return null;
+  const h = +s;
+  if (p === 1000) return h >= 500 ? -(h - 500) : h;
+  if (p === 925) return h;
+  if (p === 850) return 1000 + h;
+  if (p === 700) return h < 500 ? 3000 + h : 2000 + h;
+  if (p >= 400) return h * 10;
+  if (p >= 250) return (h < 500 ? h + 1000 : h) * 10;
+  return (h + 1000) * 10;
+}
+const SECTIONS = new Set(['21212', '31313', '41414', '51515', '61616', '62626']);
+
+/** The sounding: part A's surface and standard levels (with winds down to the level its header
+ *  names), part B's significant temperature levels and its 21212 wind levels, merged and sorted by
+ *  pressure (surface first): [{p, T, Td, wd, ws, z}]; heights from the standard levels. */
+function soundingLevels(aa, bb, txt) {
+  const L = new Map();
+  const lev = (p) => L.get(p) || L.set(p, { p, T: null, Td: null, wd: null, ws: null, z: null }).get(p);
+  if (aa && aa.length > 4) {
+    const id = (aa[0] || '').slice(4, 5), idP = /\d/.test(id) ? (id === '0' ? 1000 : +id * 100) : Infinity;
+    for (let i = 4; i < aa.length;) {
+      const g = aa[i], code = g.slice(0, 2);
+      if (code === '99' && i === 4) {
+        const l = lev(hpa3(g.slice(2)));
+        Object.assign(l, ttdd(aa[i + 1]), dddff(aa[i + 2] || '') || {}, { surface: true });
+        i += 3;
+      } else if (code in STD && g !== '88999') {
+        const p = STD[code], wind = p >= idP;
+        const { T, Td } = ttdd(aa[i + 1]);
+        if (T != null) { const l = lev(p); Object.assign(l, { T, Td, z: stdHeight(p, g.slice(2)) }); if (wind) Object.assign(l, dddff(aa[i + 2] || '') || {}); }
+        else if (wind && dddff(aa[i + 2] || '')) Object.assign(lev(p), dddff(aa[i + 2]));
+        i += wind ? 3 : 2;
+      } else break;
+    }
+  }
+  if (bb && bb.length > 4) {
+    for (let i = 4; i + 1 < bb.length && !SECTIONS.has(bb[i]); i += 2) {
+      if (!/^\d\d\d{3}$/.test(bb[i])) break;
+      const { T, Td } = ttdd(bb[i + 1]);
+      if (T == null) continue;
+      const l = lev(hpa3(bb[i].slice(2)));
+      if (l.T == null) Object.assign(l, { T, Td });
+    }
+  }
+  // wind levels: 21212 nnPPP dddff ... (the first copy of the message)
+  const w = /21212\s+([\d/\s]+?)(?=\s(?:31313|41414|51515|61616|62626)\b|$)/.exec(txt);
+  if (w) {
+    const g = w[1].trim().split(/\s+/);
+    for (let i = 0; i + 1 < g.length; i += 2) {
+      const wind = dddff(g[i + 1]);
+      if (/^\d{5}$/.test(g[i]) && wind) Object.assign(lev(hpa3(g[i].slice(2))), wind);
+    }
+  }
+  return [...L.values()].filter((l) => l.p > 50).sort((a, b) => b.p - a.p);
 }
 
 // ------------------------------------------------------------------ map icons
@@ -249,7 +333,7 @@ function dropIcon() {
 }
 
 // ------------------------------------------------------------------ map layers
-const LAYERS = ['recon-seg', 'recon-ob', 'recon-barb', 'recon-drop', 'recon-vdm', 'recon-plane'];
+const LAYERS = ['recon-seg', 'recon-ob', 'recon-barb', 'recon-drop', 'recon-vdm', 'recon-plane', 'recon-hl'];
 const emptyFC = () => ({ type: 'FeatureCollection', features: [] });
 
 function addReconLayers(map, { font, before }) {
@@ -259,6 +343,7 @@ function addReconLayers(map, { font, before }) {
   if (map.getSource('recon')) return;
   map.addSource('recon', { type: 'geojson', data: emptyFC(), tolerance: 0.1 });
   map.addSource('recon-now', { type: 'geojson', data: emptyFC() });
+  map.addSource('recon-hl', { type: 'geojson', data: emptyFC() });
   const b = before && map.getLayer(before) ? before : undefined;
   const L = (spec) => map.addLayer(spec, b);
   const halo = { 'text-color': '#ffffff', 'text-halo-color': 'rgba(3,6,12,0.9)', 'text-halo-width': 1.4 };
@@ -284,6 +369,9 @@ function addReconLayers(map, { font, before }) {
       'icon-size': ['interpolate', ['linear'], ['zoom'], 2, 0.75, 8, 1.15],
       'text-field': ['get', 'label'], 'text-font': font, 'text-size': 10.5, 'text-anchor': 'left', 'text-offset': [1.6, 0], 'text-justify': 'left', 'text-optional': true },
     paint: halo });
+  // the observation / dropsonde a chart points at
+  L({ id: 'recon-hl', type: 'circle', source: 'recon-hl',
+    paint: { 'circle-radius': 9, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2.5 } });
 }
 
 // ------------------------------------------------------------------ fetching
@@ -322,7 +410,7 @@ export class Recon {
     this.gen = 0;
     this.status = '';
     this.build();
-    onStyle(() => { this.legend(); this.render(); this.list(); });   // intensity colours / units
+    onStyle(() => { this.legend(); this.render(); this.list(); this.chart?.draw(); if (this.sonde?.isOpen) this.sonde.open(this.sonde.d); });   // colours / units
     setInterval(() => { if (this.st.on && this.live && !document.hidden) this.load(); }, 2 * 60e3);
   }
 
@@ -360,7 +448,7 @@ export class Recon {
         <div class="mt-legend rc-legend"></div>
         <div class="rc-status"></div>
         <div class="storm-list rc-list"></div>
-        <div class="note">NHC recon archive: HDOB (30-s flight-level and SFMR data), vortex data messages and dropsondes of NOAA AOC and the Air Force Reserve 53rd WRS. Times follow the map's frame; values are as transmitted (preliminary).</div>
+        <div class="note">Click a flight track or observation for its charts, a dropsonde for its Skew-T. NHC recon archive: HDOB (30-s flight-level and SFMR data), vortex data messages and dropsondes of NOAA AOC and the Air Force Reserve 53rd WRS. Times follow the map's frame; values are as transmitted (preliminary).</div>
       </div>`;
     const q = (s) => this.el.querySelector(s);
     this.tools = q('.rc-tools');
@@ -527,6 +615,27 @@ export class Recon {
     flights.forEach((f, i) => { f.i = i; f.id = `${f.ac}-${f.mission}-${f.obs[0].t}`; });
     Object.assign(this, { flights, fixes: fixes.sort((a, b) => a.t - b.t), drops: drops.sort((a, b) => a.t - b.t) });
     this.render();
+    this.chart?.draw();
+  }
+
+  /** The flight charts of a flight, its cursor at time t. */
+  openFlight(f, t) {
+    if (!f) return;
+    this.chart = this.chart || new FlightChart(this);
+    this.chart.open(f, t);
+  }
+
+  /** A dropsonde's Skew-T and numbers. */
+  openSonde(d) {
+    if (!d) return;
+    this.sonde = this.sonde || new SondeView(this);
+    this.sonde.open(d);
+  }
+
+  /** Ring around an observation / dropsonde on the map (null: none). */
+  highlight(o) {
+    const s = this.map?.getSource('recon-hl');
+    if (s) s.setData(o ? { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [o.lon, o.lat] } } : emptyFC());
   }
 
   /** An observation's value, with the values its quality flags mark as suspect left out. */
@@ -640,15 +749,23 @@ export class Recon {
       const max = (k) => obs.reduce((m, o) => { const v = this.value(o, k); return v != null && (m == null || v > m) ? v : m; }, null);
       const minP = obs.reduce((m, o) => (o.xp != null && o.xp > 850 && (m == null || o.xp < m) ? o.xp : m), null);
       const fl = max('fl'), sf = max('sfmr');
-      const b = document.createElement('button');
+      const row = document.createElement('div'), b = document.createElement('button'), c = document.createElement('button');
+      row.className = 'rc-row';
       b.className = 'storm';
+      c.className = 'rc-chartbtn';
+      c.type = 'button';
+      c.title = 'Charts of this flight: wind, pressure, temperature, altitude, rain';
+      c.setAttribute('aria-label', c.title);
+      c.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M4 4v16h16 M7 15l4-5 3 3 5-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      c.onclick = () => this.openFlight(f, f.obs[j].t);
+      row.append(b, c);
       b.innerHTML = `<i style="background:${AGENCY[f.agency].color}"></i><span><b></b><small></small></span>`;
       b.querySelector('b').textContent = `${planeName(f.ac)}${f.storm ? ` · ${f.storm}` : ''}`;
       b.querySelector('small').textContent = [`${hm(obs[0]?.t ?? f.obs[j].t)}–${hm(f.obs[j].t)}`, fl != null ? `max FL ${fmtWind(fl)}` : '', sf != null ? `SFMR ${fmtWind(sf)}` : '',
         minP != null ? `min ${minP.toFixed(1)} hPa` : ''].filter(Boolean).join(' · ');
       b.title = `${AGENCY[f.agency].long}, mission ${f.mission}`;
       b.onclick = () => { const o = f.obs[j]; if (this.fly) this.fly(o.lon, o.lat); };
-      el.appendChild(b);
+      el.appendChild(row);
     }
     if (this.fixes.length || this.drops.length) {
       const nf = this.fixes.filter((v) => v.t >= t0 && v.t <= t1).length, nd = this.drops.filter((d) => d.t >= t0 && d.t <= t1).length;
@@ -687,7 +804,26 @@ export class Recon {
       return true;
     };
     map.on('mousemove', (e) => { if (e.originalEvent?.buttons) return; show(e); });
-    map.on('click', (e) => { if (show(e)) { clearTimeout(this.tipT); this.tipT = setTimeout(() => box.classList.add('hidden'), 6000); } });
+    // click: a flight's charts, a dropsonde's Skew-T (a fix: the charts of the flight that made it)
+    map.on('click', (e) => {
+      if (!this.st.on) return;
+      const layers = ['recon-plane', 'recon-vdm', 'recon-drop', 'recon-ob', 'recon-barb', 'recon-seg'].filter((id) => map.getLayer(id));
+      const p = e.point, feat = map.queryRenderedFeatures([[p.x - 5, p.y - 5], [p.x + 5, p.y + 5]], { layers })[0];
+      if (!feat) return;
+      box.classList.add('hidden');
+      const q = feat.properties, id = feat.layer.id;
+      if (id === 'recon-drop') { this.openSonde(this.drops[q.i]); return; }
+      if (id === 'recon-vdm') {
+        const v = this.fixes[q.i];
+        const f = v && this.flights.find((x) => x.ac === v.ac && v.t >= x.obs[0].t - 600e3 && v.t <= x.obs[x.obs.length - 1].t + 600e3);
+        if (f) this.openFlight(f, v.t); else show(e);
+        return;
+      }
+      const f = this.flights[q.f];
+      if (!f) return;
+      const a = this.active?.find((x) => x.f === f);
+      this.openFlight(f, id === 'recon-plane' ? (a ? f.obs[a.j].t : null) : f.obs[q.i]?.t);
+    });
     map.getCanvasContainer().addEventListener('mouseleave', () => box.classList.add('hidden'));
   }
 
