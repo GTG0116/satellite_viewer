@@ -68,6 +68,7 @@ export const defaultProduct = (sat) => (SATS[sat].kind === 'polar' ? 'i5' : 'geo
 /** Short band name as the instrument calls it: C13 (ABI), B13 (AHI), IR105 (AMI), I5 / Ch 16 (polar). */
 export const bandLabel = (sat, b) => {
   const k = SATS[sat].kind;
+  if (L2[b]) return L2[b].short || L2[b].name;
   if (k === 'polar') return VIIRS[b]?.[0] || (ATMS_PRODUCTS[b] ? ATMS_PRODUCTS[b].short : String(b));
   return k === 'ami' ? AMI_CHANNELS[b] : `${k === 'goes' ? 'C' : 'B'}${String(b).padStart(2, '0')}`;
 };
@@ -165,6 +166,101 @@ export const Q16 = { refl: [-0.25, 2.0], bt: [150, 420], mwbt: [60, 340], logrr:
 export const NAN_CODE = 65535;
 export const kindForBand = (b) => (b <= 6 ? 'refl' : 'bt');
 
+// ------------------------------------------------------------------ GOES ABI Level-2 products (GOES only)
+// id -> f: product folder ABI-L2-<f><F|C|M> · v: variable · km: its grid · sec: sectors it is made for
+// (F full disk, C CONUS / PACUS, M mesoscale) · q: storage code range (its own kind unless `kind`)
+// · val: decoded value (scale / offset applied, fill already NaN) -> shown value (NaN = no data)
+// · range, cmap, cmaps · unit, mul (display = value * mul), dp (decimals) · classes: [value, label, colour]
+// for categories (codes are the class values; values under the first class show `below`) · cad: minutes
+// between files where not the sector's own cadence.
+const pct = (v) => (v > 100 ? NaN : v); // cloud-layer / snow percentages: 101+ are flags (no retrieval)
+const FIRE_CLASS = { 10: 1, 30: 1, 11: 2, 31: 2, 12: 3, 32: 3, 13: 4, 33: 4, 14: 5, 34: 5, 15: 6, 35: 6, 100: 0, 120: 0, 121: 0, 123: 0, 124: 0, 125: 0, 126: 0, 127: 0 };
+const PCT = { q: [0, 100], range: [0, 100], unit: '%', dp: 0 };
+const FRAC = { q: [0, 1.05], range: [0, 1], unit: '%', mul: 100, dp: 0 };
+const DSI = { f: 'DSI', km: 10, sec: 'FCM' };
+const CCL = { f: 'CCL', km: 10, sec: 'FCM', group: 'Clouds' };
+const CF_LAYERS = ['surface – 5,000 ft', '5,000 – 10,000 ft', '10,000 – 18,000 ft', '18,000 – 24,000 ft', 'above 24,000 ft'];
+export const L2 = {
+  csm: { name: 'Clear Sky Mask', group: 'Clouds', f: 'ACM', v: 'BCM', km: 2, sec: 'FCM', q: [0, 65534],
+    classes: [[0, 'Clear', '#1d3557'], [1, 'Cloudy', '#f1f3f5']], desc: 'Binary cloud mask, 2 km' },
+  ...Object.fromEntries(CF_LAYERS.map((lay, i) => [`cf${i + 1}`, { ...CCL, ...PCT, name: `Cloud Fraction — Layer ${i + 1}`, short: `CF${i + 1}`,
+    v: `CF${i + 1}`, val: pct, cmap: 'cloudfrac', cmaps: ['cloudfrac', 'turbo', 'gray'], desc: `Cloud cover ${lay}, 10 km` }])),
+  clf: { ...CCL, name: 'Cloud Layer Flag', short: 'Layers', v: 'CL', q: [0, 65534], val: (v) => (v > 31 ? NaN : v),
+    // bit i = a cloud in layer i + 1; coloured by the highest layer present
+    classes: Array.from({ length: 32 }, (_, v) => [v, v ? layerNames(v) : 'Clear',
+      ['#14213d', '#4ea8de', '#52b788', '#ffd166', '#f77f00', '#e63946'][v ? 32 - Math.clz32(v) : 0]]),
+    legend: [[0, 'Clear', '#14213d'], [1, '< 5 kft', '#4ea8de'], [2, '5–10 kft', '#52b788'], [4, '10–18 kft', '#ffd166'], [8, '18–24 kft', '#f77f00'], [16, '> 24 kft', '#e63946']],
+    desc: 'Layers holding cloud (highest shown), 10 km' },
+  cprob: { ...FRAC, name: 'Cloud Probability', group: 'Clouds', f: 'ACM', v: 'Cloud_Probabilities', km: 2, sec: 'FCM',
+    cmap: 'cloudfrac', cmaps: ['cloudfrac', 'turbo', 'gray'], desc: 'Probability of cloud, 2 km' },
+  cth: { name: 'Cloud Top Height', group: 'Clouds', f: 'ACHA', v: 'HT', km: 10, sec: 'FCM', q: [0, 20500], range: [0, 18000], unit: 'km', mul: 1e-3, dp: 1,
+    cmap: 'cth', cmaps: ['cth', 'turbo', 'gray'], desc: 'Height of the highest cloud top, 10 km' },
+  ctph: { name: 'Cloud Top Phase', group: 'Clouds', f: 'ACTP', v: 'Phase', km: 2, sec: 'FCM', q: [0, 65534],
+    classes: [[0, 'Clear', '#1d3557'], [1, 'Liquid', '#48cae4'], [2, 'Supercooled', '#2a9d8f'], [3, 'Mixed', '#e9c46a'],
+      [4, 'Ice', '#f1f3f5'], [5, 'Unknown', '#6c757d']], desc: 'Liquid, supercooled, mixed or ice tops, 2 km' },
+  ctp: { name: 'Cloud Top Pressure', group: 'Clouds', f: 'CTP', v: 'PRES', km: 10, sec: 'FC', q: [0, 1100], range: [100, 1000], unit: 'hPa', dp: 0,
+    cmap: 'ctp', cmaps: ['ctp', 'turbo', 'gray'], desc: 'Pressure at the cloud top, 10 km' },
+  tcf: { ...CCL, ...FRAC, name: 'Total Cloud Fraction', short: 'TCF', v: 'TCF', cmap: 'cloudfrac', cmaps: ['cloudfrac', 'turbo', 'gray'], desc: 'Cloud cover of the whole column, 10 km' },
+  aod: { name: 'Aerosol Optical Depth', group: 'Atmosphere', f: 'AOD', v: 'AOD', km: 2, sec: 'FC', q: [-0.05, 5], range: [0, 1], dp: 2,
+    cmap: 'aod', cmaps: ['aod', 'turbo'], desc: '550 nm, daytime and cloud-free, 2 km' },
+  dust: { name: 'Dust Detection', group: 'Atmosphere', f: 'ADP', v: 'Dust', km: 2, sec: 'FCM', q: [0, 65534], cad: { conus: 10, pacus: 10 },
+    classes: [[0, 'None', null], [1, 'Dust', '#d4a373']], desc: 'Dust flagged pixels, 2 km' },
+  rrqpe: { name: 'Rainfall Rate', group: 'Atmosphere', f: 'RRQPE', v: 'RRQPE', km: 2, sec: 'F', kind: 'logrr', unit: 'mm/h',
+    val: (v) => (v > 0 ? Math.log10(Math.max(v, 0.01)) : -2), range: [Math.log10(0.1), Math.log10(60)], cmap: 'precip', cmaps: ['precip'],
+    desc: 'Rain rate from IR calibrated by microwave, 2 km' },
+  smoke: { name: 'Smoke Detection', group: 'Atmosphere', f: 'ADP', v: 'Smoke', km: 2, sec: 'FCM', q: [0, 65534], cad: { conus: 10, pacus: 10 },
+    classes: [[0, 'None', null], [1, 'Smoke', '#adb5bd']], desc: 'Smoke flagged pixels (daytime), 2 km' },
+  tpw: { name: 'Total Precipitable Water', short: 'TPW', group: 'Atmosphere', f: 'TPW', v: 'TPW', km: 10, sec: 'FCM', kind: 'tpw', range: [0, 75], unit: 'mm', dp: 1,
+    cmap: 'tpw', cmaps: ['tpw', 'turbo'], desc: 'Clear-sky column water vapour, 10 km' },
+  cape: { ...DSI, name: 'CAPE', group: 'Stability', v: 'CAPE', q: [0, 5000], range: [0, 4000], unit: 'J/kg', dp: 0, cmap: 'cape', cmaps: ['cape', 'turbo'], desc: 'Convective available potential energy, clear sky, 10 km' },
+  ki: { ...DSI, name: 'K-Index', group: 'Stability', v: 'KI', q: [-70, 50], range: [0, 45], unit: '°C', dp: 1, cmap: 'cape', cmaps: ['cape', 'turbo', 'stab'], desc: 'Thunderstorm potential, clear sky, 10 km' },
+  li: { ...DSI, name: 'Lifted Index', group: 'Stability', v: 'LI', q: [-10, 40], range: [-10, 10], unit: '°C', dp: 1, cmap: 'stab', cmaps: ['stab', 'turbo'], desc: 'Negative = unstable, clear sky, 10 km' },
+  si: { ...DSI, name: 'Showalter Index', group: 'Stability', v: 'SI', q: [-10, 25], range: [-10, 10], unit: '°C', dp: 1, cmap: 'stab', cmaps: ['stab', 'turbo'], desc: 'Negative = unstable, clear sky, 10 km' },
+  tt: { ...DSI, name: 'Total Totals Index', group: 'Stability', v: 'TT', q: [-43, 60], range: [20, 65], unit: '°C', dp: 1, cmap: 'cape', cmaps: ['cape', 'turbo'], desc: 'Severe weather potential, clear sky, 10 km' },
+  farea: { name: 'Fire Area', group: 'Fire', f: 'FDC', v: 'Area', km: 2, sec: 'FCM', q: [0, 5], range: [0, 0.5], unit: 'km²', mul: 1, dp: 3, val: (v) => v / 1e6,
+    cmap: 'fire', cmaps: ['fire', 'turbo'], desc: 'Burning area of fire pixels, 2 km' },
+  fmask: { name: 'Fire Detection Mask', group: 'Fire', f: 'FDC', v: 'Mask', km: 2, sec: 'FCM', q: [0, 65534], val: (v) => FIRE_CLASS[v] ?? NaN,
+    classes: [[0, 'No fire', null], [1, 'Good fire pixel', '#ff0000'], [2, 'Saturated', '#ff00ff'], [3, 'Cloud contaminated', '#ff9900'],
+      [4, 'High probability', '#ffff00'], [5, 'Medium probability', '#a3e635'], [6, 'Low probability', '#4cc9f0']], desc: 'Fire pixels by confidence, 2 km' },
+  fpower: { name: 'Fire Radiative Power', group: 'Fire', f: 'FDC', v: 'Power', km: 2, sec: 'FCM', q: [0, 20000], range: [0, 500], unit: 'MW', dp: 1,
+    cmap: 'fire', cmaps: ['fire', 'turbo'], desc: 'Heat given off by fire pixels, 2 km' },
+  ftemp: { name: 'Fire Temperature', group: 'Fire', f: 'FDC', v: 'Temp', km: 2, sec: 'FCM', q: [400, 4000], range: [400, 1500], unit: 'K', dp: 0,
+    cmap: 'fire', cmaps: ['fire', 'turbo'], desc: 'Temperature of fire pixels, 2 km' },
+  lsa: { name: 'Land Surface Albedo', group: 'Land', f: 'LSA', v: 'LSA', km: 2, sec: 'FCM', q: [0, 1.05], range: [0, 0.6], unit: '%', mul: 100, dp: 1,
+    cmap: 'albedo', cmaps: ['albedo', 'gray', 'turbo'], desc: 'Shortwave broadband albedo, clear land, 2 km' },
+  lst: { name: 'Land Surface Temperature', group: 'Land', f: 'LST', v: 'LST', km: 2, sec: 'FCM', kind: 'bt', range: [250, 330], cad: { full: 60, conus: 60, pacus: 60 },
+    cmap: 'turbo', cmaps: ['turbo', 'ir_gray'], desc: 'Skin temperature of clear land, hourly' },
+  fsc: { name: 'Snow Cover', group: 'Land', f: 'FSC', v: 'FSC', km: 2, sec: 'FCM', ...PCT, val: pct, cad: { full: 60, conus: 60, pacus: 60 },
+    cmap: 'snow', cmaps: ['snow', 'gray'], desc: 'Fraction of each clear pixel under snow, hourly' },
+};
+function layerNames(v) {
+  const out = [];
+  for (let i = 0; i < 5; i++) if (v & (1 << i)) out.push(CF_LAYERS[i]);
+  return out.join(' + ');
+}
+export const L2_GROUPS = ['Clouds', 'Atmosphere', 'Stability', 'Fire', 'Land'];
+/** Kinds whose codes are categories: never blended between pixels. */
+export const DISCRETE = new Set();
+for (const [id, p] of Object.entries(L2)) {
+  p.kind ||= id;
+  if (!Q16[p.kind]) Q16[p.kind] = p.q;
+  if (p.classes) {
+    DISCRETE.add(p.kind);
+    const shown = p.classes.filter((c) => c[2]);
+    p.range = [shown[0][0] - 0.5, p.classes[p.classes.length - 1][0] + 0.5];
+    p.cmap = `cls_${id}`; p.cmaps = [p.cmap];
+  }
+}
+const L2_SECTOR = { full: 'F', custom: 'F', conus: 'C', pacus: 'C', meso1: 'M', meso2: 'M' };
+/** Product folder and file token of an L2 product for a sector, or null when it is not made there. */
+export function l2Source(product, sector) {
+  const p = L2[product], s = L2_SECTOR[sector];
+  if (!p.sec.includes(s)) return null;
+  const tok = `${p.f}${s}${s === 'M' ? (sector === 'meso2' ? '2' : '1') : ''}`;
+  return [`ABI-L2-${p.f}${s}`, tok, 'L2'];
+}
+export const l2SectorNames = (product) => [...L2[product].sec].map((s) => ({ F: 'Full Disk', C: 'CONUS / PACUS', M: 'Meso' })[s]).join(', ');
+
 export const IR_CMAPS = ['ir_color', 'ir_gray', 'ir_rainbow', 'ir_bd', 'wv', 'turbo'];
 export const VIS_CMAPS = ['vis', 'gray'];
 export const FIXED_RANGE = { ir_color: [-90 + 273.15, 40 + 273.15], ir_rainbow: [163, 330], ir_bd: [163, 330], wv: [180, 290] };
@@ -198,6 +294,7 @@ export function rangeFor(sat, b, cmap) {
     if (b === 'dnb') return [-10, -7];
     return VIIRS_RANGE[b] || (VIIRS[b] && VIIRS[b][2] === 'ir' ? [180, 320] : [0, 1.1]);
   }
+  if (L2[b]) return L2[b].range;
   if (k !== 'goes' && b <= 4) return [0, 1.1];
   if (k === 'ami' && (b === 5 || b === 6)) return b === 5 ? [0, 0.5] : [0, 0.8];
   return BAND_RANGE[b];
@@ -220,7 +317,14 @@ export function products(sat) {
   }
   // Visible, Infrared, then Water Vapor (bands 8-10) as a section of its own (sort is stable)
   const G = ['Visible', 'Infrared', 'Water Vapor'];
-  return out.concat(single.sort((a, b) => G.indexOf(a.group) - G.indexOf(b.group)));
+  out.push(...single.sort((a, b) => G.indexOf(a.group) - G.indexOf(b.group)));
+  // GOES only: the ABI Level-2 products, by group, alphabetical within each
+  if (SATS[sat].kind === 'goes') {
+    const l2 = Object.entries(L2).map(([id, p]) => ({ id, band: id, name: p.name, group: p.group,
+      desc: p.sec === 'FCM' ? p.desc : `${p.desc} · ${l2SectorNames(id)} only`, kind: 'l2', cmaps: p.cmaps, cmap: p.cmap, classes: p.classes }));
+    out.push(...l2.sort((a, b) => L2_GROUPS.indexOf(a.group) - L2_GROUPS.indexOf(b.group) || a.name.localeCompare(b.name)));
+  }
+  return out;
 }
 
 /** Bands a product needs: {role: band}. */
@@ -246,6 +350,9 @@ export const CMAPS = {
   wv: { label: 'Water vapour' }, turbo: { label: 'Turbo' }, mw_scatter: { label: 'Microwave scattering' },
   // values below the table (no rain) get their own colour: a faint veil that shows the swath
   precip: { label: 'Precipitation', below: [14, 22, 34, 70] }, tpw: { label: 'Precipitable water' },
+  cloudfrac: { label: 'Cloud cover' }, cth: { label: 'Cloud height' }, ctp: { label: 'Cloud-top pressure' }, aod: { label: 'Aerosol' },
+  cape: { label: 'Instability' }, stab: { label: 'Unstable red / stable blue' }, fire: { label: 'Fire' }, albedo: { label: 'Albedo' },
+  snow: { label: 'Snow cover' },
 };
 
 function grayStops(lo, hi, invert = false, gamma = 1, n = 32) {
@@ -302,7 +409,26 @@ const STOPS = {
     [16, '#f03e3e'], [25, '#c2255c'], [40, '#ae3ec9'], [60, '#f8d7ff']].map(([v, c]) => [Math.log10(v), c])),
   tpw: () => H([[0, '#4a2f1a'], [8, '#a0662b'], [16, '#e0b56a'], [24, '#d8f0a8'], [32, '#4cc06a'], [40, '#1c9aa8'], [48, '#2554c7'],
     [56, '#5b2bb5'], [64, '#c43fc7'], [75, '#ffd6ff']]),
+  // GOES Level-2 products (spread over the shown range)
+  cloudfrac: spread(['#0b1a33', '#1f3b63', '#3f6595', '#7c9cc0', '#bccbdc', '#ffffff']),
+  cth: spread(['#1b4332', '#2d6a4f', '#52b788', '#b7e4c7', '#ffd166', '#f77f00', '#d62828', '#9d0208', '#ff70a6', '#ffffff']),
+  ctp: spread(['#ffffff', '#ff70a6', '#9d0208', '#d62828', '#f77f00', '#ffd166', '#b7e4c7', '#52b788', '#2d6a4f', '#1b4332']),
+  aod: spread(['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026', '#5e0016']),
+  cape: spread(['#f8f9fa', '#ffe066', '#ffa94d', '#ff6b6b', '#e03131', '#ae3ec9', '#5f3dc4']),
+  stab: spread(['#7b0099', '#d6336c', '#f76707', '#fcc419', '#f8f9fa', '#74c0fc', '#1c7ed6', '#1b3a8c']),
+  fire: spread(['#fff3b0', '#ffd000', '#ff8800', '#ff3300', '#b30000', '#4a0000']),
+  albedo: spread(['#1a1a2e', '#3a5a40', '#a3b18a', '#dda15e', '#e9edc9', '#ffffff']),
+  snow: spread(['#3d3a33', '#6b705c', '#a5a58d', '#b8d8e8', '#e0f4ff', '#ffffff']),
 };
+function spread(cols) {
+  return (lo, hi) => cols.map((h, i) => [lo + (hi - lo) * i / (cols.length - 1), hex(h)]);
+}
+// category tables: flat colour per class value; values under the first coloured class are transparent
+for (const p of Object.values(L2)) {
+  if (!p.classes) continue;
+  CMAPS[p.cmap] = { label: 'Categories', below: [0, 0, 0, 0] };
+  STOPS[p.cmap] = () => p.classes.filter((c) => c[2]).flatMap(([v, , c]) => [[v - 0.5, hex(c)], [v + 0.4999, hex(c)]]);
+}
 
 export const LUT_N = 1024;
 /** 1024-entry RGBA colour table over [vmin, vmax] (piecewise-linear between stops). */

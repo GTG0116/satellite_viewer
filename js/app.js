@@ -1,5 +1,5 @@
 /* Satellite Viewer (static web edition): UI, state, loading and playback on a MapLibre map. */
-import { SATS, products, CMAPS, buildLut, lutCss, rangeFor, SECTOR_NOTES, bandsOf, rolesOf, bandLabel, defaultSector, defaultProduct } from './catalog.js';
+import { SATS, products, CMAPS, buildLut, lutCss, rangeFor, SECTOR_NOTES, bandsOf, rolesOf, bandLabel, defaultSector, defaultProduct, L2 } from './catalog.js';
 import { plan, scansFor, loadFrame, loadBands, estimateBytes, frameKey } from './scenes.js';
 import { SatMap, unwrapLine } from './map.js';
 import { autoTier, makeTier, lowerTier, FrameWatch } from './perf.js';
@@ -344,12 +344,25 @@ function updateLegend(f) {
   if (!f || f.mode !== 'band') { lg.classList.add('hidden'); return; }
   const pi = prodInfo(), cm = S.cmaps[S.product] || pi.cmap;
   const [vmin, vmax] = frameRange(f, cm), kind = f.ref.kind, pct = kind === 'refl';
-  $('legendTitle').textContent = `${pi.name} · ${pi.label}`;
+  const P = L2[f.ref.band];
+  $('legendTitle').textContent = P ? `${pi.name}${P.unit && !P.classes ? ` · ${P.unit}` : ''}` : `${pi.name} · ${pi.label}`;
   $('legendBar').style.background = lutCss(cm, vmin, vmax);
   const el = $('legendTicks');
-  el.classList.toggle('abs', !pct);
+  el.classList.toggle('abs', !pct && !P?.classes);
+  el.classList.toggle('cls', !!P?.classes);
   const at = (v, txt) => { const p = ((v - vmin) / (vmax - vmin)) * 100; return `<span style="left:${p.toFixed(1)}%;transform:translateX(-${p.toFixed(1)}%)">${txt}</span>`; };
-  if (kind === 'logrr') {
+  if (P?.classes) {
+    // categories: equal-width colour blocks, one label under each
+    const cls = (P.legend || P.classes).filter((c) => c[2]), n = cls.length;
+    $('legendBar').style.background = `linear-gradient(90deg, ${cls.map(([, , c], i) => `${c} ${(i * 100 / n).toFixed(2)}% ${((i + 1) * 100 / n).toFixed(2)}%`).join(',')})`;
+    el.innerHTML = cls.map(([, l]) => `<span>${l}</span>`).join('');
+  } else if (P && kind !== 'logrr' && kind !== 'bt') {
+    const mul = P.mul || 1, lo = vmin * mul, hi = vmax * mul, rng = hi - lo;
+    const step = [1, 2, 2.5, 5, 10].map((x) => x * 10 ** Math.floor(Math.log10(rng / 4))).find((x) => rng / x <= 5.5) || rng / 4;
+    const out = [];
+    for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + 1e-9; v += step) out.push(at(v / mul, `${+v.toFixed(3)}${v + step > hi + 1e-9 && P.unit ? ` ${P.unit}` : ''}`));
+    el.innerHTML = out.join('');
+  } else if (kind === 'logrr') {
     el.innerHTML = [0.1, 0.5, 2, 6, 16, 60].map((v, i, a) => at(Math.log10(v), `${v}${i === a.length - 1 ? ' mm/h' : ''}`)).join('');
   } else if (kind === 'tpw') {
     el.innerHTML = [0, 15, 30, 45, 60, 75].filter((v) => v >= vmin && v <= vmax).map((v) => at(v, `${v}${v === 75 ? ' mm' : ''}`)).join('');
@@ -388,7 +401,13 @@ async function probeAt(lngLat, sticky) {
     const r = await sm.probe(f, lon, lat);
     if (seq !== probeSeq) return;
     if (!r || r.value === undefined) txt += ' · outside image';
-    else {
+    else if (L2[r.band]) {
+      const P = L2[r.band], v = r.value;
+      const cls = P.classes && P.classes.find((c) => c[0] === Math.round(v));
+      const shown = v !== v ? 'no data' : cls ? cls[1] : r.kind === 'logrr' ? (v <= -1.99 ? 'no rain' : `${(10 ** v).toFixed(v < 0 ? 2 : 1)} mm/h`)
+        : r.kind === 'bt' ? `${v.toFixed(1)} K (${(v - 273.15).toFixed(1)} °C)` : `${(v * (P.mul || 1)).toFixed(P.dp ?? 1)}${P.unit ? ` ${P.unit}` : ''}`;
+      txt += ` · <b>${P.name}</b> ${shown}`;
+    } else {
       const bn = bandsOf(f.sat)[r.band], label = `${bandLabel(f.sat, r.band)} ${bn ? bn[1] + ' µm' : ''}`;
       const v = r.value;
       const fmt = { refl: () => `${(v * 100).toFixed(1)}%`, mwbt: () => `${v.toFixed(1)} K`, tpw: () => `${v.toFixed(1)} mm`,
@@ -578,7 +597,7 @@ const vol = new Volume({
   showFrameAt: (t) => { const i = cur.scans.findIndex((s) => s.t.toISOString() === t); if (i >= 0) show(i, { blend: false }); },
   satName: () => satInfo().name, productName: () => prodInfo().name,
   fields: volumeFields,
-  onLayout: () => layoutVars(),
+  onLayout: () => { layoutVars(); tabDots(); },
 });
 
 /** Cloud fields for a 3D region: the bands the retrieval needs, at native resolution inside the box. */
@@ -643,6 +662,7 @@ function swatch(p) {
       fire: '#ff3020,#203010', simplewv: '#f0f0f0,#2050a0', sandwich: '#d8d8d8,#ff4040', v_truecolor: '#3d6fb5,#d9cfa8', v_natural: '#31a3c9,#e0f0ff' }[p.id] || '#999,#333';
     return `linear-gradient(135deg, ${c})`;
   }
+  if (p.classes) { const c = p.classes.filter((x) => x[2]).map((x) => x[2]); return `linear-gradient(135deg, ${c.length > 1 ? c.join(',') : `#333,${c[0]}`})`; }
   const [vmin, vmax] = rangeFor(S.sat, p.band, p.cmap);
   return lutCss(p.cmap, vmin, vmax, 8);
 }
@@ -798,11 +818,29 @@ function togglePanel(open) {
   $('btnPanel').setAttribute('aria-expanded', String(open));
   $('btnPanel').classList.toggle('on', open);
 }
+// Two groupings of the same sections: phones and tablets switch them with the Data / Display / 3D /
+// Settings tabs (data-tab, class on), large screens with the PC edition's Imagery / Map / Weather /
+// 3D / Settings tabs (data-dtab, class don). Each remembers its own choice.
 function selectTab(t) {
   if (!document.querySelector(`.tabs button[data-tab="${t}"]`)) t = 'data';
   S.tab = t; save();
   for (const b of document.querySelectorAll('.tabs button')) b.classList.toggle('on', b.dataset.tab === t);
-  for (const s of document.querySelectorAll('.panel-body section')) s.classList.toggle('on', s.dataset.tab === t);
+  for (const s of document.querySelectorAll('.panel-body > section')) s.classList.toggle('on', s.dataset.tab === t);
+}
+function selectDTab(t) {
+  if (!document.querySelector(`.ptabs button[data-dtab="${t}"]`)) t = 'imagery';
+  S.dtab = t; save();
+  for (const b of document.querySelectorAll('.ptabs button')) { b.classList.toggle('on', b.dataset.dtab === t); b.setAttribute('aria-selected', b.dataset.dtab === t); }
+  for (const s of document.querySelectorAll('.panel-body > section')) s.classList.toggle('don', s.dataset.dtab === t);
+  document.querySelector('#panel .panel-body').scrollTop = 0;
+  tabDots();
+}
+/** A dot on the Weather / 3D tabs while something there is switched on. */
+function tabDots() {
+  const any = (sel) => [...document.querySelectorAll(sel)].some((c) => c.checked);
+  const on = { weather: any('#glmChk, #stormsChk, #mtPanel [data-k=on], #rcPanel [data-k=on], #sstPanel [data-k=on]'),
+    three: any('#threeChk, #terrainChk') || !!vol?.on };
+  for (const b of document.querySelectorAll('.ptabs button')) b.querySelector('.tab-dot').classList.toggle('hidden', !on[b.dataset.dtab] || b.classList.contains('on'));
 }
 (function sheetDrag() {
   const grip = $('grip'), panel = $('panel');
@@ -875,6 +913,8 @@ function bind() {
   $('volBtn').onclick = () => { if (isNarrow()) togglePanel(false); vol.enter(); };
   $('btnNorth').onclick = () => map.easeTo({ bearing: 0, pitch: 0, duration: 500 });
   for (const b of document.querySelectorAll('.tabs button')) b.onclick = () => selectTab(b.dataset.tab);
+  for (const b of document.querySelectorAll('.ptabs button')) b.onclick = () => selectDTab(b.dataset.dtab);
+  $('panel').addEventListener('change', tabDots);
   $('prodSearch').oninput = buildProducts;
   $('drawBtn').onclick = startDraw;
   $('cmapSel').onchange = (e) => { S.cmaps[S.product] = e.target.value; save(); showCurrent(); buildProducts(); };
@@ -984,6 +1024,7 @@ startExtras();
 if (satInfo().retired && !S.archive) startArchive(true); // a link to a retired satellite opens its archive
 buildSectors(); buildProducts(); buildCmaps(); buildFrames(); syncArchive();
 selectTab(S.tab);
+selectDTab(S.dtab);
 if (S.panelCollapsed && !isNarrow()) togglePanel(false);
 perfInfo();
 if (S.cam) cur.fitted = `${S.sat}|${S.sector}|${S.bbox}`;

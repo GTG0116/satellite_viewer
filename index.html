@@ -64,16 +64,28 @@
 
 <aside id="panel" aria-label="Layers and settings">
   <div class="sheet-grip" id="grip" aria-hidden="true"><span></span></div>
+  <!-- phones / tablets: four text tabs (data-tab on each section) -->
   <nav class="tabs" role="tablist">
     <button role="tab" data-tab="data" class="on">Data</button>
     <button role="tab" data-tab="display">Display</button>
     <button role="tab" data-tab="three">3D</button>
     <button role="tab" data-tab="settings">Settings</button>
   </nav>
+  <!-- large screens: Imagery / Map / Weather / 3D / Settings, as the PC edition (data-dtab on each section) -->
+  <nav class="ptabs" role="tablist" aria-label="Panel sections">
+    <button type="button" role="tab" data-dtab="imagery" title="Satellite, sector and product"><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><g transform="rotate(-35 12 12)" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="9.6" y="9.2" width="4.8" height="5.6" rx="0.9"/><rect x="2.4" y="10" width="5.6" height="4" rx="0.4"/><rect x="16" y="10" width="5.6" height="4" rx="0.4"/></g></svg><span>Imagery</span><i class="tab-dot hidden"></i></button>
+    <button type="button" role="tab" data-dtab="map" title="Colour table, opacity, base map layers, animation"><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M3.5 6.5l5.5-2 6 2 5.5-2v13l-5.5 2-6-2-5.5 2z M9 4.5v13 M15 6.5v13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>Map</span><i class="tab-dot hidden"></i></button>
+    <button type="button" role="tab" data-dtab="weather" title="Lightning, tropical cyclones, model tracks, recon and sea surface temperature"><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M9.4 12a2.6 2.6 0 1 0 5.2 0a2.6 2.6 0 1 0-5.2 0 M9.6 10.6C9 6.5 12.5 3.6 17 4.4c-3 .4-4.6 2.4-4.6 4.9 M14.4 13.4c.6 4.1-2.9 7-7.4 6.2 3-.4 4.6-2.4 4.6-4.9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Weather</span><i class="tab-dot hidden"></i></button>
+    <button type="button" role="tab" data-dtab="three" title="3D terrain, cloud-top relief and the 3D cloud volume"><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z M4 7.5l8 4.5 8-4.5 M12 12v9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>3D</span><i class="tab-dot hidden"></i></button>
+    <button type="button" role="tab" data-dtab="settings" title="Quality, data resolution and about"><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M12 2.8v2.4 M12 18.8v2.4 M2.8 12h2.4 M18.8 12h2.4 M5.5 5.5l1.7 1.7 M16.8 16.8l1.7 1.7 M5.5 18.5l1.7-1.7 M16.8 7.2l1.7-1.7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Settings</span><i class="tab-dot hidden"></i></button>
+  </nav>
   <div class="panel-body">
-    <section data-tab="data" class="on">
+    <!-- Imagery: what is shown -->
+    <section data-tab="data" data-dtab="imagery" class="on">
       <h3>Satellite</h3>
       <div id="satList" class="sat-grid"></div>
+    </section>
+    <section data-tab="data" data-dtab="imagery" class="on">
       <h3>Sector</h3>
       <div id="sectorList" class="chips"></div>
       <div id="sectorNote" class="note"></div>
@@ -81,41 +93,61 @@
         <button id="drawBtn" class="btn primary"><svg viewBox="0 0 24 24" width="15" height="15"><rect x="4" y="5" width="16" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-dasharray="3 2.4"/></svg>Draw box</button>
         <span id="bboxText" class="note mono"></span>
       </div>
+    </section>
+    <section data-tab="data" data-dtab="imagery" class="on">
       <h3 class="prod-h">Product <input id="prodSearch" type="search" placeholder="Filter…" aria-label="Filter products"></h3>
       <div id="prodGroups" class="chips small"></div>
       <div id="prodList" role="listbox" aria-label="Products"></div>
     </section>
 
-    <section data-tab="display">
-      <h3>Display</h3>
+    <!-- Map: how it looks -->
+    <section data-tab="display" data-dtab="map">
+      <h3>Imagery</h3>
       <label class="row" id="cmapRow">Colour table <select id="cmapSel"></select></label>
       <label class="row">Opacity <input type="range" id="opacity" min="0" max="100" value="100"><span id="opacityVal" class="mono val">100%</span></label>
       <label class="row check" title="Blend neighbouring satellite pixels (bilinear) instead of showing each pixel as a sharp square"><input type="checkbox" id="smoothChk"> Smooth imagery</label>
+      <label class="row check" title="NASA Black Marble city lights under GeoColor's night side"><input type="checkbox" id="lightsChk" checked> City lights (GeoColor)</label>
+    </section>
+    <section data-tab="display" data-dtab="map">
+      <h3>Globe</h3>
       <label class="row">Base map <select id="themeSel"><option value="dark">Dark</option><option value="light">Light</option><option value="satellite">Satellite imagery</option></select></label>
       <label class="row check"><input type="checkbox" id="globeChk" checked> Globe projection</label>
+      <label class="row check"><input type="checkbox" id="nightChk" checked> Day / night shading</label>
+    </section>
+    <section data-tab="display" data-dtab="map">
+      <h3>Lines &amp; labels</h3>
       <label class="row check"><input type="checkbox" id="labelsChk" checked> Place labels</label>
       <label class="row check"><input type="checkbox" id="bordersChk" checked> Coastlines &amp; borders</label>
       <label class="row check"><input type="checkbox" id="statesChk" checked> State / province lines</label>
       <label class="row check"><input type="checkbox" id="gratChk" checked> Latitude / longitude grid</label>
       <label class="row check"><input type="checkbox" id="outlineChk" checked> Sector outline</label>
-      <label class="row check"><input type="checkbox" id="nightChk" checked> Day / night shading</label>
-      <label class="row check" title="NASA Black Marble city lights under GeoColor's night side"><input type="checkbox" id="lightsChk" checked> City lights (GeoColor)</label>
+    </section>
+    <section data-tab="display" data-dtab="map">
       <div id="msPanel" class="ms-panel"></div>
-      <h3>Overlays</h3>
-      <label class="row check" title="Lightning flashes from the GOES Geostationary Lightning Mapper (GOES-East and GOES-West) in the minutes before the shown frame; the newest are brightest"><input type="checkbox" id="glmChk"> GLM lightning</label>
-      <label class="row" id="glmRow">Window <select id="glmMin"><option value="1">1 min</option><option value="5">5 min</option><option value="10">10 min</option><option value="15">15 min</option></select><span id="glmInfo" class="mono val"></span></label>
-      <label class="row check" title="Active tropical cyclones: NHC (Atlantic, East and Central Pacific) and JTWC (West Pacific, Indian Ocean, Southern Hemisphere) positions, past tracks and forecasts"><input type="checkbox" id="stormsChk" checked> Tropical cyclones (NHC / JTWC)</label>
-      <div id="stormList" class="storm-list"></div>
-      <div id="csPanel" class="cs-panel"></div>
-      <div id="mtPanel" class="mt-panel"></div>
-      <div id="rcPanel" class="rc-panel"></div>
-      <div id="sstPanel" class="sst-panel"></div>
     </section>
 
-    <section data-tab="three">
+    <!-- Weather: overlays, one card each -->
+    <section data-tab="display" data-dtab="weather" class="card">
+      <h3 class="narrow-only">Overlays</h3>
+      <label class="row check card-head" title="Lightning flashes from the GOES Geostationary Lightning Mapper (GOES-East and GOES-West) in the minutes before the shown frame; the newest are brightest"><input type="checkbox" id="glmChk"> GLM lightning</label>
+      <label class="row" id="glmRow">Window <select id="glmMin"><option value="1">1 min</option><option value="5">5 min</option><option value="10">10 min</option><option value="15">15 min</option></select><span id="glmInfo" class="mono val"></span></label>
+    </section>
+    <section data-tab="display" data-dtab="weather" class="card">
+      <label class="row check card-head" title="Active tropical cyclones: NHC (Atlantic, East and Central Pacific) and JTWC (West Pacific, Indian Ocean, Southern Hemisphere) positions, past tracks and forecasts"><input type="checkbox" id="stormsChk" checked> Tropical cyclones (NHC / JTWC)</label>
+      <div id="stormList" class="storm-list"></div>
+      <div id="csPanel" class="cs-panel"></div>
+    </section>
+    <section data-tab="display" data-dtab="weather" class="card"><div id="mtPanel" class="mt-panel"></div></section>
+    <section data-tab="display" data-dtab="weather" class="card"><div id="rcPanel" class="rc-panel"></div></section>
+    <section data-tab="display" data-dtab="weather" class="card"><div id="sstPanel" class="sst-panel"></div></section>
+
+    <!-- 3D -->
+    <section data-tab="three" data-dtab="three">
       <h3>3D cloud volume</h3>
       <button id="volBtn" class="btn vol"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z M4 7.5l8 4.5 8-4.5 M12 12v9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>Open 3D cloud volume</button>
       <div class="note">Opens a 3D view beside the map (below it on phones). Draw a box or an area (20–1500 km) over the clouds: they are rebuilt as volumetric clouds from the satellite bands (cloud-top height, optical depth, bases by cloud type) over real terrain. Drag the corners to reshape, the violet dot to move the 3D camera.</div>
+    </section>
+    <section data-tab="three" data-dtab="three">
       <h3>3D on the map</h3>
       <label class="row check" title="Raise the imagery into a relief: infrared by cloud-top temperature (colder = taller), visible by reflectance"><input type="checkbox" id="threeChk"> 3D cloud tops</label>
       <label class="row">Height ×<input type="range" id="exag" min="1" max="60" value="10"><span id="exagVal" class="mono val">10×</span></label>
@@ -130,12 +162,15 @@
       <div class="note">Desktop: right-drag or Ctrl-drag to tilt / rotate. Touch: two-finger twist rotates, two-finger slide up / down tilts.</div>
     </section>
 
-    <section data-tab="settings">
+    <!-- Animation (Map tab on large screens), performance and about -->
+    <section data-tab="settings" data-dtab="map">
       <h3>Animation</h3>
       <label class="row">Loop length <select id="framesSel"></select></label>
       <label class="row">Speed <select id="speedSel"><option value="450">Slow</option><option value="220" selected>Normal</option><option value="110">Fast</option></select></label>
       <label class="row check"><input type="checkbox" id="blendChk"> Cross-fade frames</label>
       <label class="row">Fade time <input type="range" id="blendMs" min="50" max="1000" step="10" value="300"><span id="blendVal" class="mono val">300 ms</span></label>
+    </section>
+    <section data-tab="settings" data-dtab="settings">
       <h3>Performance</h3>
       <label class="row">Quality <select id="qualitySel">
         <option value="auto">Auto</option><option value="low">Low · phones, old PCs</option><option value="medium">Medium</option><option value="high">High · desktop GPU</option>
@@ -145,8 +180,10 @@
       </select></label>
       <div id="perfInfo" class="note mono"></div>
       <label class="row check"><input type="checkbox" id="fpsChk"> Show frame rate</label>
+    </section>
+    <section data-tab="settings" data-dtab="settings">
       <h3>About</h3>
-      <div class="note">Imagery is decoded in your browser from the raw NOAA Open Data Dissemination files (GOES ABI NetCDF‑4 / HDF5, Himawari HSD bzip2, GK2A AMI NetCDF‑4, VIIRS SDR HDF5, MiRS ATMS NetCDF‑4, GLM LCFA). Tropical cyclones: NHC (NOAA tropical map service) and JTWC; ensemble model tracks: ECMWF open data, NCEP ensemble tracker (GEFS, GEPS), Google DeepMind Weather Lab (FNV3, WNV3); Hurricane Hunter recon: NHC's archive of NOAA and Air Force Reserve messages; sea surface temperature: NOAA Coral Reef Watch CoralTemp via ERDDAP. Map: MapLibre GL JS, OpenFreeMap / OpenStreetMap; terrain: AWS Terrain Tiles; 3D ground imagery: Esri; city lights: NASA GIBS. Nearest-pixel display unless <i>Smooth imagery</i> is on.</div>
+      <div class="note">Imagery is decoded in your browser from the raw NOAA Open Data Dissemination files (GOES ABI NetCDF‑4 / HDF5 bands and Level-2 products, Himawari HSD bzip2, GK2A AMI NetCDF‑4, VIIRS SDR HDF5, MiRS ATMS NetCDF‑4, GLM LCFA). Tropical cyclones: NHC (NOAA tropical map service) and JTWC; ensemble model tracks: ECMWF open data, NCEP ensemble tracker (GEFS, GEPS), Google DeepMind Weather Lab (FNV3, WNV3); Hurricane Hunter recon: NHC's archive of NOAA and Air Force Reserve messages; sea surface temperature: NOAA Coral Reef Watch CoralTemp via ERDDAP. Map: MapLibre GL JS, OpenFreeMap / OpenStreetMap; terrain: AWS Terrain Tiles; 3D ground imagery: Esri; city lights: NASA GIBS. Nearest-pixel display unless <i>Smooth imagery</i> is on.</div>
     </section>
   </div>
 </aside>

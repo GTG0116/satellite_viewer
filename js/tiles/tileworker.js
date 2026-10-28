@@ -10,7 +10,7 @@
  * Tiles are returned as ImageBitmaps, so nothing is PNG-encoded or decoded on the way.
  */
 import { lonlatToRC, gridKey } from '../geo.js';
-import { Q16, NAN_CODE } from '../catalog.js';
+import { Q16, NAN_CODE, DISCRETE } from '../catalog.js';
 
 const frames = new Map();   // id -> frame
 const tables = new Map();   // lut id -> Uint32Array(65536) code -> RGBA
@@ -306,6 +306,8 @@ const TASKS = {
   async tile({ id, lutId, z, x, y, size, lights, smooth }) {
     const f = frames.get(id);
     const out = new Uint8Array(size * size * 4);
+    // categories (cloud phase, fire mask ...) are never blended between pixels
+    if (f && f.mode === 'band' && DISCRETE.has(f.ref.kind)) smooth = false;
     if (f) {
       const idx = cachedIndex(f.grid, f.w, f.h, z, x, y, size, smooth);
       if (idx) {

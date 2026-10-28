@@ -28,6 +28,12 @@ Himawari-8, which are listed in Archive mode only (going Live from one switches 
 All 16 bands, 12 RGB composites (11 on GK2A, which has no 2.2 µm band for Fire Temperature), loops,
 archive back to 2015, custom boxes, pixel probe.
 
+**GOES Level-2 products** (GOES only, `L2` in `js/catalog.js`): the 30 cloud, atmosphere, stability,
+fire and land products of the `ABI-L2-*` folders (cloud mask / layers / height / phase / pressure,
+aerosol, dust, smoke, rain rate, TPW, CAPE and stability indices, fire mask / area / power /
+temperature, albedo, land surface temperature, snow cover), read with range requests like the bands
+(any integer type through a lookup table, float32 fire power per pixel). Categories are never smoothed.
+
 **Polar orbiters** (`js/polar.js`, `js/decode/swath.js`): VIIRS I1–I5, M1–M16, the Day/Night Band,
 True Color (M5 / M4 / M3) and Natural Color (I3 / I2 / I1) from the SDR granules, and all 22 ATMS
 channels, rain rate and precipitable water from the MiRS IMG files (`noaa-nesdis-{n20,n21,snpp}-pds`).

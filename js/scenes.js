@@ -1,6 +1,6 @@
 /* Frame planning and loading: which files / chunks / segments a frame needs, at which output
  * resolution (fitted to the device budget), and the decode jobs that produce it. */
-import { SATS, RGBS, bandsFor, bandRes, buildLut } from './catalog.js';
+import { SATS, RGBS, L2, bandsFor, bandRes, buildLut, l2Source, l2SectorNames } from './catalog.js';
 import { availableScans } from './listing.js';
 import { s3url } from './listing.js';
 import { subgrid, windowForBBox, resKm } from './geo.js';
@@ -27,9 +27,11 @@ export function fdGrid2km(sat) {
     x0: (1 - 2750.5) * sx * D, dx: sx * D, y0: -(1 - 2750.5) * sx * D, dy: -sx * D, ny: 5500, nx: 5500 };
 }
 
-/** Data family: 'cmip' (GOES L2 MCMIP, all bands at 2 km in one file), 'l1b' (GOES native), 'ahi' or 'ami'. */
-export function familyFor(sat, resolution) {
+/** Data family: 'cmip' (GOES L2 MCMIP, all bands at 2 km in one file), 'l1b' (GOES native), 'l2'
+ *  (a GOES Level-2 product), 'ahi' or 'ami'. */
+export function familyFor(sat, resolution, product) {
   const k = SATS[sat].kind;
+  if (k === 'goes' && L2[product]) return 'l2';
   return k !== 'goes' ? k : resolution === 'native' ? 'l1b' : 'cmip';
 }
 
@@ -43,11 +45,13 @@ export function plan({ sat, sector, product, resolution, bbox, bandList }, budge
     if (bandList) throw new Error('The 3D cloud volume works on geostationary frames (GOES, Himawari, GK2A)');
     return polarPlan({ sat, sector, product }, budget);
   }
-  const family = familyFor(sat, resolution);
-  const roles = bandList ? Object.fromEntries(bandList.map((b) => [`b${b}`, b])) : bandsFor(sat, product);
+  const family = bandList ? familyFor(sat, resolution) : familyFor(sat, resolution, product);
+  if (family === 'l2' && !l2Source(product, sector)) throw new Error(`${L2[product].name} is only made for ${l2SectorNames(product)}`);
+  // an L2 product is one variable of one file (band 0 of the scan); its grid (2 or 10 km) comes from the file
+  const roles = bandList ? Object.fromEntries(bandList.map((b) => [`b${b}`, b])) : family === 'l2' ? { band: 0 } : bandsFor(sat, product);
   const bands = [...new Set(Object.values(roles))].sort((a, b) => a - b);
   const k = {};
-  for (const b of bands) k[b] = family === 'cmip' ? 1 : 2 / bandRes(sat, b);
+  for (const b of bands) k[b] = family === 'cmip' || family === 'l2' ? 1 : 2 / bandRes(sat, b);
   const kmax = Math.max(...bands.map((b) => k[b]));
   let win2;
   if (sector === 'custom') {
@@ -80,6 +84,7 @@ export function estimateBytes(p, scan) {
   const rows = p.full ? 1 : (p.win2[1] - p.win2[0]) / DIMS2[kind].full[0];
   if (kind === 'goes') {
     if (p.family === 'cmip') { const f = scan.bands[0]; return f ? f.size * (p.bands.length / 16) * rows * 1.05 : 0; }
+    if (p.family === 'l2') return (scan.bands[0]?.size || 0) * rows;
     return p.bands.reduce((s, b) => s + (scan.bands[b]?.size || 0), 0) * rows;
   }
   if (kind === 'ami') return p.bands.reduce((s, b) => s + (scan.bands[b]?.size || 0) * amiChunkShare(p, b), 0);
@@ -105,7 +110,7 @@ function segmentNeeded(p, b, seg) {
 
 export async function scansFor(p, opts) {
   if (p.polar) return polarScans(p.sat, p.product, p.minutes, opts);
-  return availableScans(p.sat, p.sector === 'custom' ? 'custom' : p.sector, p.family, p.bands, opts);
+  return availableScans(p.sat, p.sector === 'custom' ? 'custom' : p.sector, p.family, p.bands, { ...opts, product: p.product });
 }
 
 let irLut = null;
@@ -117,11 +122,12 @@ export async function loadBands(p, scan, pool, { pri = 5, signal } = {}) {
   const bandData = {}; // band -> {codes, w, h, grid, kind}
   let bytes = 0;
   if (kind === 'goes') {
-    const files = p.family === 'cmip'
-      ? [{ f: scan.bands[0], vars: p.bands.map((b) => ({ v: `CMI_C${String(b).padStart(2, '0')}`, k: 1, b })) }]
-      : p.bands.map((b) => ({ f: scan.bands[b], vars: [{ v: 'Rad', k: p.k[b], b }] }));
+    const files = p.family === 'l2' ? [{ f: scan.bands[0], vars: [{ v: L2[p.product].v, k: 1, b: 0, l2: p.product }] }]
+      : p.family === 'cmip'
+        ? [{ f: scan.bands[0], vars: p.bands.map((b) => ({ v: `CMI_C${String(b).padStart(2, '0')}`, k: 1, b })) }]
+        : p.bands.map((b) => ({ f: scan.bands[b], vars: [{ v: 'Rad', k: p.k[b], b }] }));
     await Promise.all(files.map(async ({ f, vars }) => {
-      const r = await pool.run('goesFile', { url: s3url(bucket, f.key), size: f.size, vars: vars.map(({ v, k }) => ({ v, k })),
+      const r = await pool.run('goesFile', { url: s3url(bucket, f.key), size: f.size, vars: vars.map(({ v, k, l2 }) => ({ v, k, l2 })),
         win: p.full ? null : p.win2, ko: p.ko }, { pri, signal });
       bytes += r.bytes;
       r.bands.forEach((o, i) => { bandData[vars[i].b] = o; });

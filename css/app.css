@@ -199,6 +199,7 @@ input[type=search], input[type=datetime-local], input[type=number] { background:
 #legendTicks { display: flex; justify-content: space-between; margin-top: 3px; color: var(--muted); font-size: 11px; }
 #legendTicks.abs { display: block; position: relative; height: 1.3em; }
 #legendTicks.abs span { position: absolute; top: 0; white-space: nowrap; }
+#legendTicks.cls span { flex: 1 1 0; min-width: 0; text-align: center; font-size: 10px; line-height: 1.15; overflow-wrap: break-word; }
 #probe { position: fixed; left: var(--gut); bottom: calc(var(--tl-top) + 112px); padding: 7px 10px; z-index: 12; font-size: 12px; max-width: 290px; pointer-events: none; }
 #probe b { color: var(--accent-2); font-weight: 600; }
 #fps { position: fixed; top: calc(60px + var(--safe-t)); left: var(--gut); z-index: 12; font-size: 11px; color: var(--ok); background: rgba(0,0,0,.45); padding: 2px 6px; border-radius: 6px; pointer-events: none; }
@@ -234,6 +235,32 @@ body.panel-collapsed #timeline { left: 50%; width: min(860px, calc(100vw - 2 * v
   border-radius: 10px; background: #3a1620; border: 1px solid #7a2a3a; color: #ffd9de; font-size: 13px; }
 #toast.info { background: #12263f; border-color: #2c5a8c; color: #d9ecff; }
 .nojs { position: fixed; inset: 0; display: grid; place-items: center; }
+
+/* ------------------------------------------------------------ large screens: the PC edition's tabbed sidebar
+   (Imagery / Map / Weather / 3D / Settings), each tab a column of titled sections or overlay cards;
+   the panel is as tall as the tab needs */
+.ptabs { display: none; }
+@media (min-width: 1100px) {
+  #panel { bottom: auto; max-height: calc(100vh - 62px - var(--safe-t) - var(--tl-h) - 26px - var(--safe-b)); overflow: hidden; }
+  .ptabs { flex: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px; padding: 6px;
+    border-bottom: 1px solid var(--line); border-radius: var(--r) var(--r) 0 0; background: rgba(255, 255, 255, .02); }
+  .ptabs button { position: relative; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 2px 6px; border: 0; border-radius: 10px;
+    background: transparent; color: var(--text-3); font-size: 10.5px; font-weight: 600; letter-spacing: .3px; cursor: pointer; transition: background .15s, color .15s; }
+  .ptabs button:hover { color: var(--text); background: rgba(255, 255, 255, .05); }
+  .ptabs button.on { color: var(--accent-2); background: rgba(77, 163, 255, .16); }
+  .ptabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .tab-dot { position: absolute; top: 5px; left: calc(50% + 7px); width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 2px var(--glass-solid); }
+  .panel-body { padding: 0 0 6px; }
+  .panel-body > section { display: none; padding: 2px 14px 10px; }
+  .panel-body > section.don { display: block; }
+  .panel-body > section.don ~ section.don:not(.card) { border-top: 1px solid var(--line); }
+  .panel-body > section > h3:first-child { margin-top: 12px; }
+  .panel-body > section.card { margin: 10px 10px 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255, 255, 255, .025); }
+  .card-head { margin-top: 0; color: var(--text); font-weight: 600; font-size: 13px; }
+  .card .mt-panel, .card .rc-panel, .card .sst-panel { margin-top: 0; }
+  .card .mt-panel > .row.check:first-child { margin-top: 0; color: var(--text); font-weight: 600; font-size: 13px; }
+  .narrow-only { display: none !important; }
+}
 
 /* ------------------------------------------------------------ tablet: drawer */
 @media (max-width: 1099px) {

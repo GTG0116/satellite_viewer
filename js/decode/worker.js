@@ -1,7 +1,8 @@
 /* Decode worker: downloads only the bytes it needs, decodes them and returns compact 16-bit
  * storage codes (or RGBA for composites) as transferable buffers.
  *
- *   goesFile  ABI bands from an L1b Rad or L2 MCMIP NetCDF-4 file (HDF5 chunks, deflate + shuffle)
+ *   goesFile  ABI bands from an L1b Rad or L2 MCMIP NetCDF-4 file, or one GOES Level-2 product
+ *             (HDF5 chunks, deflate + shuffle)
  *   hsdSeg    one Himawari HSD segment (.DAT.bz2)
  *   amiFile   one GK2A AMI band (L1B NetCDF-4, 2-D deflate chunks)
  *   composite  an RGB recipe from band codes
@@ -13,7 +14,7 @@ import { H5File, setInflate, decodeChunk } from './hdf5.js';
 import { inflateZlib } from './inflate.js';
 import { RangeSource, fetchBytes, setMaxInflight, stats } from './range.js';
 import { composite } from './composites.js';
-import { Q16, NAN_CODE, kindForBand } from '../catalog.js';
+import { Q16, NAN_CODE, kindForBand, L2 } from '../catalog.js';
 // Himawari's decoders and the 3D cloud retrieval load on first use (every worker would parse them at start)
 const hsdMods = () => Promise.all([import('./bzip2.js'), import('./hsd.js')]);
 import { subgrid } from '../geo.js';
@@ -35,7 +36,8 @@ function encoder(kind) {
 const first = (a) => (Array.isArray(a) ? a[0] : a);
 
 // ------------------------------------------------------------------ GOES ABI
-/** One or more bands of one ABI file. vars: [{v: 'Rad' | 'CMI_Cnn', k: band px per 2 km px}].
+/** One or more bands of one ABI file. vars: [{v: 'Rad' | 'CMI_Cnn' | an L2 variable, k: band px per
+ *  2 km px, l2: the Level-2 product id (catalog L2) for an L2 variable}].
  *  win: [R0, R1, C0, C1] in 2 km pixels (null = whole grid); ko: output px per 2 km px. */
 async function goesFile({ url, size, vars, win, ko }, signal) {
   const b0 = stats.bytes;
@@ -50,7 +52,7 @@ async function goesFile({ url, size, vars, win, ko }, signal) {
   const grid = { lon0: A(pa, 'longitude_of_projection_origin'), H: A(pa, 'perspective_point_height') + A(pa, 'semi_major_axis'),
     req: A(pa, 'semi_major_axis'), rpol: A(pa, 'semi_minor_axis'), sweep: pa.get('sweep_angle_axis') || 'x',
     x0: first(xv) * xs + xo, dx: xs, y0: first(yv) * ys + yo, dy: ys, ny: yd.shape[0], nx: xd.shape[0] };
-  const out = await Promise.all(vars.map(({ v, k }) => readVar(f, src, grid, v, k, win, ko)));
+  const out = await Promise.all(vars.map(({ v, k, l2 }) => (l2 ? readL2(f, src, grid, v, l2, win, ko) : readVar(f, src, grid, v, k, win, ko))));
   const bytes = stats.bytes - b0;
   return { result: { bands: out, bytes }, transfer: out.map((o) => o.codes.buffer) };
 }
@@ -85,10 +87,33 @@ async function readVar(f, src, grid, v, k, win, ko) {
   return { codes, w, h, kind, band, grid: sub };
 }
 
-/** Window [R0, R1, C0, C1] (2 km pixels; null = all) of a chunked 2-D uint16 dataset whose grid
- *  has k px per 2 km px, kept every s-th pixel (s from ko) and mapped through lut to codes.
- *  Only the chunks holding kept pixels are downloaded; decoding overlaps the downloads. */
+/** One GOES Level-2 product variable (any integer type through a lookup table, float32 per pixel).
+ *  Its grid is the product's own (2 km, or 10 km for cloud heights, layers, stability, TPW). */
+async function readL2(f, src, grid, v, id, win, ko) {
+  const P = L2[id], ds = await f.dataset(v), at = ds.attrs, t = ds.dtype || { size: 2, cls: 0 };
+  const num = (n, d) => { const a = at.get(n); return a === undefined ? d : +first(a); };
+  const fill = num('_FillValue', NaN), scale = num('scale_factor', 1), offset = num('add_offset', 0);
+  const enc = encoder(P.kind), val = P.val || ((x) => x);
+  const phys = (raw) => (raw === fill || raw !== raw ? NAN_CODE : enc(val(raw * scale + offset)));
+  let conv;
+  if (t.cls === 1) conv = phys; // float: per pixel
+  else {
+    const n = t.size === 1 ? 256 : 65536, sh = 32 - 8 * t.size;
+    conv = new Uint16Array(n);
+    for (let i = 0; i < n; i++) conv[i] = phys(t.signed ? (i << sh) >> sh : i);
+  }
+  const g = { ...grid, ny: ds.shape[0], nx: ds.shape[1] };
+  const k = Math.abs(5.6e-5 / grid.dx); // grid px per 2 km px: 1 or 0.2
+  const { codes, w, h, sub } = await readWindow(f, src, ds, g, conv, k, win, ko);
+  return { codes, w, h, kind: P.kind, band: id, grid: sub };
+}
+
+/** Window [R0, R1, C0, C1] (2 km pixels; null = all) of a chunked 2-D dataset whose grid has k px
+ *  per 2 km px, kept every s-th pixel (s from ko) and mapped to codes through lut (integers: a
+ *  table indexed by the stored value as unsigned) or a function (floats). Only the chunks holding
+ *  kept pixels are downloaded; decoding overlaps the downloads. */
 async function readWindow(f, src, ds, g, lut, k, win, ko) {
+  const es = ds.dtype?.size || 2, fn = typeof lut === 'function' ? lut : null;
   const [R0, R1, C0, C1] = win || [0, g.ny / k, 0, g.nx / k];
   const r0 = Math.round(R0 * k), r1 = Math.min(g.ny, Math.round(R1 * k)), c0 = Math.round(C0 * k), c1 = Math.min(g.nx, Math.round(C1 * k));
   const s = k >= ko ? Math.round(k / ko) : 1;
@@ -103,15 +128,17 @@ async function readWindow(f, src, ds, g, lut, k, win, ko) {
   });
   await src.streamRanges(chunks.map((ch) => [ch.addr, ch.size, ch]), async (rg, bytes) => {
     const ch = rg[2];
-    const u = await decodeChunk(bytes, ds.filters, ch.mask, 2);
-    const raw = new Uint16Array(u.buffer, u.byteOffset, u.byteLength >> 1);
+    const u = await decodeChunk(bytes, ds.filters, ch.mask, es);
+    const raw = es === 1 ? u : es === 2 ? new Uint16Array(u.buffer, u.byteOffset, u.byteLength >> 1)
+      : new Float32Array(u.byteOffset % 4 ? u.slice().buffer : u.buffer, u.byteOffset % 4 ? 0 : u.byteOffset, u.byteLength >> 2);
     const ra = Math.max(ch.off[0], r0), rb = Math.min(ch.off[0] + cr, r1);
     const ca = Math.max(ch.off[1], c0), cb = Math.min(ch.off[1] + cc, c1);
     let gr = r0 + Math.ceil((ra - r0) / s) * s;
     const gc0 = c0 + Math.ceil((ca - c0) / s) * s;
     for (; gr < rb; gr += s) {
       const orow = ((gr - r0) / s) * w, irow = (gr - ch.off[0]) * cc - ch.off[1];
-      for (let gc = gc0; gc < cb; gc += s) codes[orow + (gc - c0) / s] = lut[raw[irow + gc]];
+      if (fn) for (let gc = gc0; gc < cb; gc += s) codes[orow + (gc - c0) / s] = fn(raw[irow + gc]);
+      else for (let gc = gc0; gc < cb; gc += s) codes[orow + (gc - c0) / s] = lut[raw[irow + gc]];
     }
   });
   return { codes, w, h, sub: subgrid(g, r0, c0, h, w, s) };

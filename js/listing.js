@@ -3,7 +3,7 @@
  * Listings use narrow prefixes (one sector token, all bands) so an hour of 1-minute meso scans is
  * one small request; past hours are cached far longer than the hour still being written.
  */
-import { SATS } from './catalog.js';
+import { SATS, L2, l2Source } from './catalog.js';
 
 const cfg = (globalThis.SATVIEW_CONFIG || {});
 export function s3url(bucket, key = '') {
@@ -50,8 +50,10 @@ const doy = (d) => Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.g
 // ------------------------------------------------------------------ GOES
 export const CADENCE_MIN = { full: 10, conus: 5, pacus: 5, meso1: 1, meso2: 1, custom: 10, japan: 2.5, target: 2.5, la: 2 };
 
-/** Product folder + filename token of a GOES sector for a data family ('cmip' | 'l1b'). */
-export function goesSource(sector, family) {
+/** Product folder + filename token of a GOES sector for a data family ('cmip' | 'l1b' | 'l2', the
+ *  last for the Level-2 product `product`). */
+export function goesSource(sector, family, product) {
+  if (family === 'l2') return l2Source(product, sector);
   const s = sector === 'custom' ? 'full' : sector;
   if (family === 'cmip') {
     if (s === 'full') return ['ABI-L2-MCMIPF', 'MCMIPF', 'L2'];
@@ -73,9 +75,11 @@ function hourFolders(end, hours) {
   return out;
 }
 
-export async function goesScans(sat, sector, family, { end, hours, signal }) {
+export async function goesScans(sat, sector, family, { end, hours, signal, product }) {
   const { bucket } = SATS[sat];
-  const [folder, token, level] = goesSource(sector, family);
+  const src = goesSource(sector, family, product);
+  if (!src) return new Map();
+  const [folder, token, level] = src;
   const now = Date.now();
   end = end || new Date();
   const lists = await Promise.all(hourFolders(end, hours).map((t) => {
@@ -163,16 +167,16 @@ const complete = (e) => Array.isArray(e) ? e.length > 0 && e.length === e[0].nse
  *   live:    the latest `limit` scans
  *   archive: every scan in [end - hours, end]
  */
-export async function availableScans(sat, sector, family, bands, { limit = 12, end = null, hours = null, signal } = {}) {
-  const cad = CADENCE_MIN[sector] || 10;
+export async function availableScans(sat, sector, family, bands, { limit = 12, end = null, hours = null, signal, product } = {}) {
+  const cad = (family === 'l2' && L2[product].cad?.[sector]) || CADENCE_MIN[sector] || 10;
   const live = !end;
   if (live) hours = Math.min(24, Math.max(sector === 'full' || sector === 'custom' ? 1.5 : 1, (limit * cad) / 60 + 0.4));
   else hours = Math.min(24, Math.max(0.1, hours || 1));
   const kind = SATS[sat].kind;
-  const range = { end: end || new Date(), hours, signal };
+  const range = { end: end || new Date(), hours, signal, product };
   const scans = kind === 'goes' ? await goesScans(sat, sector, family, range)
     : kind === 'ami' ? await amiScans(sat, sector, range) : await ahiScans(sat, sector, range);
-  const need = kind === 'goes' && family === 'cmip' ? [0] : bands;
+  const need = kind === 'goes' && (family === 'cmip' || family === 'l2') ? [0] : bands;
   let ok = [...scans.values()].filter((s) => need.every((b) => complete(s.bands[b])));
   if (!live) { const lo = end.getTime() - hours * 3600e3; ok = ok.filter((s) => s.t >= lo && s.t <= end); }
   ok.sort((a, b) => b.t - a.t);
