@@ -378,6 +378,9 @@ float cloudDensity(vec3 pk, bool hq, float fp, out float hf) {
   if (f2.a < 0.02) return 0.0;
   hf = 0.0;
   float conv = f.a, ice = f2.g, tau = f2.b;
+  // a thick ice sheet (a thunderstorm's anvil) rather than a thin cirrus veil: solid, with a broad,
+  // gently rolling top and a defined underside instead of wisps and spikes
+  float sheet = ice * (1.0 - conv) * smoothstep(2.0, 12.0, tau);
   // every octave's phase also drifts with the slow warp field (by most of a period over tens of km):
   // the noise is no longer exactly periodic, so features never stack up into rows or a grid
   vec3 ph = vec3(wn.g - 0.5, 0.0, wn.b - 0.5);
@@ -386,8 +389,8 @@ float cloudDensity(vec3 pk, bool hq, float fp, out float hf) {
   big = 0.5 + (big - 0.5) * (0.35 + 0.65 * smoothstep(0.25, 0.75, wn.r));
   // ~2 km lumps: heaped tops and a lumpy (not flat-blurred) underside
   vec2 mid = textureLod(uShape, yaw(pk + ph * 3.4, 1.97) * vec3(0.42, 0.3, 0.42) + vec3(0.37, 0.11, 0.73), nLod(fp, 0.037)).ra;
-  float topD = f.r + (big - 0.5) * mix(0.35, 1.5, conv) * min(thick, 4.0) * 0.8
-             + (mid.x - 0.5) * mix(0.4, 0.8, conv) * min(thick, 2.5);
+  float topD = f.r + ((big - 0.5) * mix(0.35, 1.5, conv) * min(thick, 4.0) * 0.8
+             + (mid.x - 0.5) * mix(0.4, 0.8, conv) * min(thick, 2.5)) * (1.0 - 0.55 * sheet);
   float baseD = f.g + (wn.a - 0.5) * 0.25 * min(thick, 2.0) + (0.55 - mid.y) * 0.45 * min(thick, 1.6);
   // optically thin (edge / broken) liquid cloud is also geometrically thin: edges dome down
   // instead of ending in vertical walls
@@ -401,14 +404,15 @@ float cloudDensity(vec3 pk, bool hq, float fp, out float hf) {
   // vertical profile in km, not as a fraction of the depth: tall columns stay columns and only
   // their upper few km round off into domes (cumulus heads); bases are flat-ish
   float taper = clamp(thD * mix(0.25, 0.55, conv), 0.12, mix(1.2, 3.0, conv));
+  taper = mix(taper, min(taper, 0.5), sheet);
   float pr = smoothstep(0.0, clamp(thD * mix(0.05, 0.12, conv), 0.04, 0.5), dB) * smoothstep(0.0, taper, dT);
   // optically thin liquid cloud is mostly broken (sub-pixel) cumulus; thin ice is a veil
   float cov = 0.42 + 0.58 * smoothstep(0.3, 9.0, tau);
-  cov = mix(cov, 0.82, ice * (1.0 - conv));
+  cov = mix(mix(cov, 0.82, ice * (1.0 - conv)), 0.95, sheet);
   vec2 e = min(uv, 1.0 - uv);
   cov = clamp(cov + uCoverage, 0.0, 1.0) * smoothstep(0.0, 0.07, min(e.x, e.y) + (wn.g - 0.5) * 0.05)
       * smoothstep(0.03, 0.8, f2.a + (wn.g - 0.5) * 0.3);
-  vec3 sp = yaw(pk + ph * 6.0, 0.38) * vec3(0.24, mix(0.26, 0.6, ice * (1.0 - conv)), 0.24);
+  vec3 sp = yaw(pk + ph * 6.0, 0.38) * vec3(0.24, mix(0.26, 0.6, ice * (1.0 - conv) * (1.0 - 0.75 * sheet)), 0.24);
   float n = textureLod(uShape, sp, nLod(fp, 0.065)).r;
   // towers get bigger lobes: blend in the same noise at ~2.5x the scale (3-4 km heads on a
   // cumulonimbus, ~1 km bulges on small cumulus)

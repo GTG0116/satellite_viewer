@@ -105,7 +105,18 @@ input[type=search], input[type=datetime-local], input[type=number] { background:
 .chips button.on { border-color: var(--accent); background: rgba(77,163,255,.18); color: #fff; }
 .chips.small button { padding: 3px 9px; min-height: 26px; font-size: 12px; }
 
-#prodList { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+#prodList { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+.pfam { font-size: 10.5px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin: 8px 2px 0; }
+.pfam:first-child { margin-top: 0; }
+.psec { border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.02); }
+.psec-h { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 38px; padding: 8px 10px; border: 0; border-radius: 10px; background: none; cursor: pointer; text-align: left; font-size: 13px; font-weight: 600; }
+.psec-h:hover { background: rgba(255,255,255,.04); }
+.psec-h svg { flex: none; color: var(--muted); transition: transform .15s; }
+.psec.open > .psec-h svg { transform: rotate(90deg); }
+.psec-h .pt { white-space: nowrap; }
+.psec-h .pcur { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; color: var(--accent); }
+.psec-h .pc { margin-left: auto; flex: none; font-family: var(--mono); font-size: 11px; font-weight: 400; color: var(--muted); }
+.psec-b { display: flex; flex-direction: column; gap: 3px; padding: 0 4px 4px; }
 .prod { display: flex; align-items: center; gap: 10px; padding: 7px 9px; border-radius: 9px; border: 1px solid transparent; cursor: pointer; background: none; text-align: left; width: 100%; }
 .prod:hover { background: rgba(255,255,255,.04); }
 .prod.on { border-color: var(--accent); background: rgba(77,163,255,.14); }
@@ -313,7 +324,7 @@ body.panel-collapsed #timeline { left: 50%; width: min(860px, calc(100vw - 2 * v
   #archiveBar .ab-field:first-of-type { flex: 1; min-width: 0; }
   #archiveBar input[type=datetime-local] { width: 100%; min-width: 0; }
 }
-@media (hover: none) { .prod:hover { background: none; } }
+@media (hover: none) { .prod:hover, .psec-h:hover { background: none; } }
 
 /* ------------------------------------------------------------ 3D volume (split view) */
 .btn.vol { width: 100%; justify-content: center; background: var(--vol-soft); border-color: var(--vol); color: var(--vol); font-weight: 600; }

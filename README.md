@@ -19,8 +19,13 @@ Everything the Python back end did is done in the browser:
   mountains (AWS Terrain Tiles).
 - **3D cloud volume**: the original three.js volumetric renderer. The cloud retrieval
   (`js/decode/retrieve3d.js`, a port of `backend/render3d.py`) runs in a worker on 5 bands read at
-  native resolution inside the box (VIIRS I5 + I1 for polar slices); ground imagery is Esri World
-  Imagery. With a VR headset the 3D view can be entered in VR (see below).
+  native resolution inside the box (VIIRS I5 + I1 for polar slices), plus a ~115 km margin from which it
+  judges whether cold cloud is one storm's anvil (an elevated ice layer over its core and rain shaft) or
+  part of an organised system such as a hurricane's CDO (kept as deep columns); ground imagery is Esri
+  World Imagery. With a VR headset the 3D view can be entered in VR (see below).
+- **Products** are listed in collapsible sections (RGB composites, visible, infrared, water vapour, then
+  the Level-2 clouds / atmosphere / stability / fire / land groups); the section holding the shown
+  product opens by itself, and the filter searches all of them.
 
 Satellites: GOES-19 / GOES-18 (live), Himawari-9 (live), GK2A (live, archive from Feb 2023),
 NOAA-20 / NOAA-21 / Suomi NPP (polar orbiters, live and archive), and the retired GOES-16 / GOES-17 /

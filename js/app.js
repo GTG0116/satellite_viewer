@@ -1,5 +1,5 @@
 /* Satellite Viewer (static web edition): UI, state, loading and playback on a MapLibre map. */
-import { SATS, products, CMAPS, buildLut, lutCss, rangeFor, SECTOR_NOTES, bandsOf, rolesOf, bandLabel, defaultSector, defaultProduct, L2 } from './catalog.js';
+import { SATS, products, CMAPS, buildLut, lutCss, rangeFor, SECTOR_NOTES, bandsOf, rolesOf, bandLabel, defaultSector, defaultProduct, L2, L2_GROUPS } from './catalog.js';
 import { plan, scansFor, loadFrame, loadBands, estimateBytes, frameKey } from './scenes.js';
 import { SatMap, unwrapLine } from './map.js';
 import { autoTier, makeTier, lowerTier, FrameWatch } from './perf.js';
@@ -609,20 +609,28 @@ async function volumeFields(r, progress = () => {}) {
   const want = { ir: roles.ir103, red: roles.red, snow: roles.snow, swir: roles.swir, ir12: roles.ir123 };
   const bandList = [...new Set(Object.values(want))];
   let [w, s, e, n] = r.bbox;
-  const pad = 0.04 * Math.max(e - w, n - s) + 0.05;
-  const bbox = [w - pad, Math.max(-80, s - pad), e + pad, Math.min(80, n + pad)];
+  // a ~115 km margin (less for big boxes, which hold their own context): the retrieval looks there
+  // to tell a lone storm's anvil from part of an organised system (retrieve3d.js, organisation)
+  const kx = 111.32 * Math.cos(((s + n) / 2) * Math.PI / 180), boxKm = Math.max((e - w) * kx, (n - s) * 110.57);
+  const padKm = 115 - 85 * Math.min(1, Math.max(0, (boxKm - 500) / 400));
+  const padY = padKm / 110.57, padX = padKm / kx;
+  const bbox = [w - padX, Math.max(-80, s - padY), e + padX, Math.min(80, n + padY)];
   const res = tier.name === 'high' ? 'native' : S.resolution;
   // the shown sector when it is a small native one holding the box (same scan), else a custom box
   const inside = (g) => [[w, s], [e, s], [e, n], [w, n]].every(([x, y]) => { const o = lonlatToRC(g, ((x + 540) % 360) - 180, y); return o && o[0] >= 0 && o[1] >= 0 && o[0] < g.ny && o[1] < g.nx; });
   let sector = 'custom', scan = null;
-  if (['meso1', 'meso2', 'target', 'japan', 'la'].includes(f.sector) && inside(f.grid)) { sector = f.sector; scan = f.scan; }
+  if (['meso1', 'meso2', 'target', 'japan', 'la'].includes(f.sector) && inside(f.grid)) sector = f.sector;
   const budget3 = { maxTex: 8192, framePx: tier.name === 'low' ? 4e6 : tier.name === 'medium' ? 9e6 : 25e6 };
   const p = plan({ sat: f.sat, sector, resolution: res, bbox: sector === 'custom' ? bbox : null, bandList }, budget3);
+  // the shown frame's scan only lists the files of its own family (a Meso GeoColor frame on the 2 km
+  // multi-band file has no L1b band files for a native-resolution retrieval)
+  if (sector !== 'custom' && f.plan?.family === p.family) scan = f.scan;
   if (!scan) {
-    progress('Finding the matching full-disk scan…');
-    const end = new Date(f.time.getTime() + 11 * 60e3);
-    const scans = await availableScans(f.sat, 'custom', p.family, p.bands, { end, hours: 0.6 });
-    if (!scans.length) throw new Error('no full-disk scan near this time');
+    const local = sector !== 'custom';
+    progress(`Finding the matching ${local ? 'sector' : 'full-disk'} scan…`);
+    const end = new Date(f.time.getTime() + (local ? 2 : 11) * 60e3);
+    const scans = await availableScans(f.sat, sector, p.family, p.bands, { end, hours: local ? 0.15 : 0.6 });
+    if (!scans.length) throw new Error(`no ${local ? 'sector' : 'full-disk'} scan near this time`);
     scan = scans.reduce((a, b) => (Math.abs(b.t - f.time) < Math.abs(a.t - f.time) ? b : a));
   }
   const est = estimateBytes(p, scan);
@@ -691,31 +699,49 @@ function buildSectors() {
   $('bboxText').textContent = S.bbox ? S.bbox.map((v) => v.toFixed(1)).join(', ') : 'no box yet';
 }
 let estimates = {};
+// product sections: the catalog's groups, under a heading per family (imagery, derived products,
+// microwave); a section is open when it holds the shown product unless opened / closed by hand
+const GROUP_NAMES = { RGB: 'RGB composites', Visible: 'Visible & near-IR', 'Water Vapor': 'Water vapor', Microwave: 'ATMS' };
+const familyOf = (g) => (L2_GROUPS.includes(g) ? 'Level-2 products' : g === 'Microwave' ? 'Microwave' : 'Imagery');
 function buildProducts() {
-  const list = prodList();
-  const groups = ['all', ...new Set(list.map((p) => p.group))];
-  // the saved filter, unless this satellite has no such group
-  const groupFilter = groups.includes(S.group) ? S.group : 'all';
-  const ge = $('prodGroups'); ge.innerHTML = '';
-  for (const g of groups) {
-    const b = document.createElement('button');
-    b.textContent = g === 'all' ? 'All' : g; b.className = g === groupFilter ? 'on' : '';
-    b.onclick = () => { S.group = g; save(); buildProducts(); };
-    ge.appendChild(b);
-  }
-  const q = $('prodSearch').value.trim().toLowerCase();
+  const list = prodList(), q = $('prodSearch').value.trim().toLowerCase();
+  const shown = list.filter((p) => !q || `${p.name} ${p.label || ''} ${p.desc} ${p.group}`.toLowerCase().includes(q));
+  const groups = [...new Set(list.map((p) => p.group))];
+  const families = new Set(groups.map(familyOf));
   const el = $('prodList'); el.innerHTML = '';
-  for (const p of list) {
-    if (groupFilter !== 'all' && p.group !== groupFilter) continue;
-    if (q && !`${p.name} ${p.label || ''} ${p.desc}`.toLowerCase().includes(q)) continue;
-    const b = document.createElement('button');
-    const est = estimates[p.id], heavy = est > tier.maxFrameMB * 1e6;
-    b.className = `prod${p.id === S.product ? ' on' : ''}${heavy ? ' heavy' : ''}`;
-    b.setAttribute('role', 'option'); b.setAttribute('aria-selected', p.id === S.product);
-    b.innerHTML = `<span class="sw" style="background:${swatch(p)}"></span><span><span class="pn">${p.name}</span><span class="pd">${p.label ? p.label + ' · ' : ''}${p.desc}</span></span>${est ? `<span class="sz" title="Download per frame">${fmtMB(est)}</span>` : ''}`;
-    b.onclick = () => selectProduct(p.id);
-    el.appendChild(b);
+  let fam = null;
+  for (const g of groups) {
+    const items = shown.filter((p) => p.group === g);
+    if (!items.length) continue;
+    if (families.size > 1 && familyOf(g) !== fam) {
+      fam = familyOf(g);
+      const h = document.createElement('div'); h.className = 'pfam'; h.textContent = fam;
+      el.appendChild(h);
+    }
+    const cur = items.find((p) => p.id === S.product);
+    const open = q ? true : S.prodOpen[g] ?? !!cur;
+    const sec = document.createElement('div'); sec.className = `psec${open ? ' open' : ''}`;
+    const hd = document.createElement('button'); hd.className = 'psec-h'; hd.setAttribute('aria-expanded', open);
+    hd.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="pt">${GROUP_NAMES[g] || g}</span>${!open && cur ? `<span class="pcur">${cur.name}</span>` : ''}<span class="pc">${items.length}</span>`;
+    hd.onclick = () => { S.prodOpen[g] = !open; save(); buildProducts(); };
+    sec.appendChild(hd);
+    if (open) {
+      const body = document.createElement('div'); body.className = 'psec-b';
+      body.setAttribute('role', 'listbox'); body.setAttribute('aria-label', GROUP_NAMES[g] || g);
+      for (const p of items) {
+        const b = document.createElement('button');
+        const est = estimates[p.id], heavy = est > tier.maxFrameMB * 1e6;
+        b.className = `prod${p.id === S.product ? ' on' : ''}${heavy ? ' heavy' : ''}`;
+        b.setAttribute('role', 'option'); b.setAttribute('aria-selected', p.id === S.product);
+        b.innerHTML = `<span class="sw" style="background:${swatch(p)}"></span><span><span class="pn">${p.name}</span><span class="pd">${p.label ? p.label + ' · ' : ''}${p.desc}</span></span>${est ? `<span class="sz" title="Download per frame">${fmtMB(est)}</span>` : ''}`;
+        b.onclick = () => selectProduct(p.id);
+        body.appendChild(b);
+      }
+      sec.appendChild(body);
+    }
+    el.appendChild(sec);
   }
+  if (!el.children.length) el.innerHTML = '<div class="note">No product matches.</div>';
 }
 function updateEstimates(scan) {
   estimates = {};

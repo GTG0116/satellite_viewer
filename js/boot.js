@@ -22,8 +22,9 @@ export const S = Object.assign({
   blend: false, blendMs: 300, threeD: false, exag: 10, terrain: false, terrainExag: 1.5, borders: true, states: true, grat: true,
   outline: true, night: true, lights: true, labels: true, globe: true, theme: 'dark', quality: 'auto', resolution: 'cmip',
   bbox: null, fps: false, archive: null, cam: null, smooth: false, glm: false, glmMin: 5, storms: true, mtracks: {}, recon: {}, sst: {}, tcstyle: {}, mapstyle: {},
-  tab: 'data', dtab: 'imagery', group: 'all', panelCollapsed: false, // panel tab (phones / large screens), product-group filter, side panel folded (desktop)
+  tab: 'data', dtab: 'imagery', prodOpen: {}, panelCollapsed: false, // panel tab (phones / large screens), product sections opened / closed by hand, side panel folded (desktop)
 }, saved);
+delete S.group; // the old product-group filter (replaced by sections)
 S.nFrames = Math.min(S.nFrames || tier.defFrames, tier.maxFrames);
 if (!SATS[S.sat]) S.sat = 'goes19';
 readHash();
