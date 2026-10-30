@@ -28,7 +28,8 @@ function toHalf(v) {
   const s = (x >> 16) & 0x8000; let e = ((x >> 23) & 0xff) - 112, m = x & 0x7fffff;
   if (e <= 0) { if (e < -10) return s; m |= 0x800000; return s | ((m >> (1 - e)) + 0x1000) >> 13; }
   if (e >= 31) return s | 0x7c00 | (((x >> 23) & 0xff) === 255 && m ? 0x200 : 0);
-  return s | (e << 10) | ((m + 0x1000) >> 13);
+  // (added, not or-ed: a mantissa that rounds up carries into the exponent; or-ed, 7.999 km became 4)
+  return s | Math.min(0x7c00, (e << 10) + ((m + 0x1000) >> 13));
 }
 function halfPack(arrs, n) {
   const k = arrs.length, out = new Uint16Array(n * k);
@@ -274,8 +275,8 @@ export async function buildFields({ bands, bbox, time, sat, sector, sources }) {
   // polar swaths (VIIRS SDR): reflectance already divided by the sun's cosine; looked at from
   // 830 km, not 36 000, so no geostationary parallax shift
   const g = bands.ir.grid, polar = g.proj === 'laea';
-  const org = organisation(bands.ir, w, s, e, n, kx, irRes, nx, ny);
-  const f = retrieve({ bt, red, r16, bt39, bt12, mu, zg, lat: lat2, t, cell, irRes, nx, ny, reflNorm: polar, org });
+  const { org, dCore } = organisation(bands.ir, w, s, e, n, kx, irRes, nx, ny);
+  const f = retrieve({ bt, red, r16, bt39, bt12, mu, zg, lat: lat2, t, cell, irRes, nx, ny, reflNorm: polar, org, dCoreOut: dCore });
   if (!polar) parallax(f, lon2, lat2, g.lon0, g.H / 1000, kx * (e - w) / nx, KY * (n - s) / ny, nx, ny);
   return {
     result: {
@@ -287,10 +288,24 @@ export async function buildFields({ bands, bbox, time, sat, sector, sources }) {
   };
 }
 
-/** How organised the cold cloud around each cell is, 0 (scattered / isolated storms) .. 1 (a
- *  hurricane's CDO, an MCS shield): the share of cold (< ~235 K) tops within ~55 km, from a coarse
- *  10.3 µm grid that reaches ORG_PAD km past the box (the bands are loaded with that margin), so a
- *  tight box on one part of a big system still sees the system. */
+/** Distance (km) from every cell to the nearest cell of mask (1e3 where mask is empty). */
+function distField(mask, nx, ny, cellKm) {
+  const N = nx * ny, d = new Float32Array(N).fill(1e3);
+  if (!mask.some((v) => v)) return d;
+  const xs = Float32Array.from({ length: N }, (_, i) => i % nx), ys = Float32Array.from({ length: N }, (_, i) => (i / nx) | 0);
+  const nxs = fillNearest(xs, mask, nx, ny), nys = fillNearest(ys, mask, nx, ny);
+  for (let i = 0; i < N; i++) d[i] = Math.hypot(xs[i] - nxs[i], ys[i] - nys[i]) * cellKm;
+  return d;
+}
+
+/** The storm systems around the box, from a coarse 10.3 µm grid that reaches ORG_PAD km past it
+ *  (the bands are loaded with that margin), so a tight box on one part of a big system still sees
+ *  the system:
+ *    org    how organised the cold cloud around each cell is, 0 (scattered / isolated storms) .. 1
+ *           (a hurricane's CDO, an MCS shield): the share of cold (< ~235 K) tops within ~55 km
+ *    dCore  distance (km) to the nearest storm core outside the box (tops colder than the cold
+ *           cloud around them, or a small lone cold tower): an anvil whose tower stands outside
+ *           the box is still an anvil (the cores inside are found from the finer fields) */
 const ORG_PAD = 110;
 function organisation(band, w, s, e, n, kx, irRes, nx, ny) {
   const cc = Math.max(2.5, irRes), pw = ORG_PAD / kx, ph = ORG_PAD / KY;
@@ -298,16 +313,86 @@ function organisation(band, w, s, e, n, kx, irRes, nx, ny) {
   const cnx = Math.max(8, Math.round((ce - cw) * kx / cc)), cny = Math.max(8, Math.round((cn - cs) * KY / cc));
   const clon = Float64Array.from({ length: cnx }, (_, i) => cw + (i + 0.5) / cnx * (ce - cw));
   const clat = Float64Array.from({ length: cny }, (_, j) => cn - (j + 0.5) / cny * (cn - cs));
-  const bt = sampleBilinear(band, clon, clat), M = cnx * cny;
-  const cold = new Float32Array(M), have = new Float32Array(M);
-  for (let i = 0; i < M; i++) if (isF(bt[i])) { have[i] = 1; cold[i] = sstep(240, 225, bt[i]); }
-  const sg = 55 / ((ce - cw) * kx / cnx);
+  const bt = sampleBilinear(band, clon, clat), M = cnx * cny, ck = (ce - cw) * kx / cnx;
+  const cold = new Float32Array(M), have = new Float32Array(M), hiC = new Float32Array(M), btHi = new Float32Array(M);
+  for (let i = 0; i < M; i++) {
+    if (!isF(bt[i])) continue;
+    have[i] = 1; cold[i] = sstep(240, 225, bt[i]); hiC[i] = sstep(250, 236, bt[i]); btHi[i] = bt[i] * hiC[i];
+  }
+  const sg = 55 / ck;
   const num = gauss(cold, cnx, cny, sg), den = gauss(have, cnx, cny, sg);
-  const out = new Float32Array(nx * ny);
+  const sgA = Math.max(1.5, 8 / ck), hS = gauss(hiC, cnx, cny, sgA), bS = gauss(btHi, cnx, cny, sgA);
+  const core = new Uint8Array(M);
+  for (let j = 0; j < cny; j++) for (let i = 0; i < cnx; i++) {
+    const k = j * cnx + i, lo = clon[i], la = clat[j];
+    if (lo >= w && lo <= e && la >= s && la <= n) continue;
+    const anom = hS[k] > 0.02 ? bS[k] / hS[k] - bt[k] : 0;
+    core[k] = hiC[k] * sstep(236, 226, bt[k]) * Math.max(sstep(1.5, 5, anom), sstep(0.45, 0.2, hS[k])) > 0.5 ? 1 : 0;
+  }
+  const dC = distField(core, cnx, cny, ck);
+  const org = new Float32Array(nx * ny), dCore = new Float32Array(nx * ny);
   for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
     const cy = ((n - (y + 0.5) / ny * (n - s)) - cn) / (cs - cn) * cny - 0.5, cx = ((w + (x + 0.5) / nx * (e - w)) - cw) / (ce - cw) * cnx - 0.5;
     const d = bilin(den, cnx, cny, cy, cx);
-    out[y * nx + x] = d > 0.05 ? sstep(0.5, 0.8, bilin(num, cnx, cny, cy, cx) / d) : 1;
+    org[y * nx + x] = d > 0.05 ? sstep(0.5, 0.8, bilin(num, cnx, cny, cy, cx) / d) : 1;
+    dCore[y * nx + x] = bilin(dC, cnx, cny, cy, cx);
+  }
+  return { org, dCore };
+}
+
+/** Hurricane eyes: warm holes (20 K+ warmer than the coldest tops within ~30 km), round, 4-120 km
+ *  across, closed in by a ring of deep cold cloud. Eyewalls lean outward with height (the
+ *  "stadium"): the eye the satellite sees open at the top is narrower lower down, ~60% as wide at
+ *  the cloud base. Returns per cell the height (km) the eyewall cloud reaches there (0 outside
+ *  eyes). */
+function eyewalls(tc, valid, lcl, zTop, nx, ny, cell) {
+  const N = nx * ny, out = new Float32Array(N);
+  const coldest = maxFilter(tc.map((v, i) => (valid[i] ? -v : -400)), nx, ny, Math.max(3, Math.round(30 / cell)) | 1);
+  const cand = new Uint8Array(N);
+  for (let i = 0; i < N; i++) cand[i] = valid[i] && -coldest[i] < 228 && tc[i] > -coldest[i] + 20 ? 1 : 0;
+  const lab = new Int32Array(N).fill(-1), eye = new Uint8Array(N), stack = [];
+  const walls = [];
+  for (let i0 = 0; i0 < N; i0++) {
+    if (!cand[i0] || lab[i0] >= 0) continue;
+    const id = i0, cells = [];
+    let border = false, sx = 0, sy = 0;
+    lab[i0] = id; stack.push(i0);
+    while (stack.length) {
+      const i = stack.pop(), x = i % nx, y = (i / nx) | 0;
+      cells.push(i); sx += x; sy += y;
+      if (x === 0 || y === 0 || x === nx - 1 || y === ny - 1) border = true;
+      for (const j of [x > 0 ? i - 1 : -1, x < nx - 1 ? i + 1 : -1, y > 0 ? i - nx : -1, y < ny - 1 ? i + nx : -1]) {
+        if (j >= 0 && cand[j] && lab[j] < 0) { lab[j] = id; stack.push(j); }
+      }
+    }
+    const area = cells.length * cell * cell, rEq = Math.sqrt(area / Math.PI);
+    if (border || rEq < 2 || rEq > 60) continue;
+    // round (no cell much farther from the centre than the equivalent radius), and walled in
+    const cx = sx / cells.length, cy = sy / cells.length;
+    let rMax = 0;
+    for (const i of cells) rMax = Math.max(rMax, Math.hypot(i % nx - cx, ((i / nx) | 0) - cy) * cell);
+    if (rMax > 2 * rEq + 2 * cell) continue;
+    let nRing = 0, nCold = 0, tcSum = 0, ztSum = 0, lclSum = 0;
+    for (const i of cells) {
+      const x = i % nx, y = (i / nx) | 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx, yy = y + dy, j = yy * nx + xx;
+        if (xx < 0 || yy < 0 || xx >= nx || yy >= ny || lab[j] === id) continue;
+        nRing++; tcSum += tc[j]; ztSum += zTop[j]; lclSum += lcl[j];
+        if (valid[j] && tc[j] < 235) nCold++;
+      }
+    }
+    if (!nRing || nCold < 0.85 * nRing || tcSum / nRing > 228) continue;
+    for (const i of cells) eye[i] = 1;
+    walls.push({ cells, rEq, zt: ztSum / nRing, zb: lclSum / nRing });
+  }
+  if (!walls.length) return out;
+  const dWall = distField(eye.map((v) => 1 - v), nx, ny, cell);
+  for (const { cells, rEq, zt, zb } of walls) {
+    for (const i of cells) {
+      const f = 1 - 2.5 * dWall[i] / rEq;
+      if (f > 0) out[i] = zb + (zt - zb) * Math.pow(f, 0.77);
+    }
   }
   return out;
 }
@@ -339,7 +424,7 @@ function parallax(f, lon, lat, satLon, satR, cellX, cellY, nx, ny) {
   for (let i = 0; i < N; i++) { f.base[i] = Math.max(f.base[i], f.zg[i] + 0.05); f.top[i] = Math.max(f.top[i], f.base[i] + 0.12); }
 }
 
-function retrieve({ bt: bt0, red, r16, bt39, bt12, mu, zg: zg0, lat, t, cell, irRes, nx, ny, reflNorm = false, org = null }) {
+function retrieve({ bt: bt0, red, r16, bt39, bt12, mu, zg: zg0, lat, t, cell, irRes, nx, ny, reflNorm = false, org = null, dCoreOut = null }) {
   const N = nx * ny;
   const valid = new Uint8Array(N), bt = new Float32Array(N), zg = new Float32Array(N), alat = new Float32Array(N);
   for (let i = 0; i < N; i++) { valid[i] = isF(bt0[i]) ? 1 : 0; bt[i] = valid[i] ? bt0[i] : 290; zg[i] = isF(zg0[i]) ? zg0[i] : 0; alat[i] = Math.abs(lat[i]); }
@@ -440,7 +525,7 @@ function retrieve({ bt: bt0, red, r16, bt39, bt12, mu, zg: zg0, lat, t, cell, ir
   }
 
   // ---- cloud-top temperature (semi-transparency, broken low cloud)
-  const zTop = new Float32Array(N), tc = new Float32Array(N), tauIn = new Float32Array(N), zTrop = new Float32Array(N);
+  const zTop = new Float32Array(N), tc = new Float32Array(N), tauIn = new Float32Array(N), zTrop = new Float32Array(N), tTropA = new Float32Array(N);
   for (let i = 0; i < N; i++) {
     let eps = wDay[i] > 0.5 ? 1 - Math.exp(-tau[i] / 2.13) : epsIr[i];
     eps = clamp(eps, 0.25, 1);
@@ -456,7 +541,7 @@ function retrieve({ bt: bt0, red, r16, bt39, bt12, mu, zg: zg0, lat, t, cell, ir
     if (broken) tcv = Math.max(Math.min(tcv, tcb), bt[i] - 25);
     tauIn[i] = broken ? Math.max(tau[i], 9) : tau[i];
     zTrop[i] = 17 - 7 * sstep(15, 65, alat[i]);
-    const tTrop = tSfc[i] - LAPSE * (zTrop[i] - zg[i]);
+    const tTrop = tTropA[i] = tSfc[i] - LAPSE * (zTrop[i] - zg[i]);
     tcv = Math.max(tcv, tTrop - 18);
     tc[i] = tcv;
     let z = tcv >= tTrop ? zg[i] + (tSfc[i] - tcv) / LAPSE : zTrop[i] + Math.min((tTrop - tcv) / 8, 3);
@@ -478,36 +563,54 @@ function retrieve({ bt: bt0, red, r16, bt39, bt12, mu, zg: zg0, lat, t, cell, ir
   const tex = new Float32Array(N), deep = new Float32Array(N);
   for (let i = 0; i < N; i++) { tex[i] = clamp(Math.sqrt(Math.max(m2[i] - m1[i] * m1[i], 0)) / 0.7, 0, 1); deep[i] = sstep(245, 222, tc[i]) * sstep(18, 45, tau[i]); }
 
-  // ---- thunderstorm anatomy. An ordinary storm is a convective core (the tower and its rain shaft,
-  // cloud down to the LCL) under an anvil: an ice layer a few km deep spreading over clear air,
-  // its base sloping down toward the core. Cores are cold domes in the 10.3 µm tops (overshooting /
-  // bubbling tops, colder than the anvil around them) and small lone cold towers. Organised systems
-  // (a hurricane's CDO, an MCS shield: cold cloud over most of a ~100 km neighbourhood) stay deep
-  // columns throughout.
+  // ---- hurricane eyes: the eyewall cloud leans into the eye below the level the satellite sees
+  const wallZ = eyewalls(tc, valid, lcl, zTop, nx, ny, cell), eyeW = new Uint8Array(N);
+  for (let i = 0; i < N; i++) {
+    if (wallZ[i] < zTop[i] + 0.3) continue;
+    eyeW[i] = 1; zTop[i] = wallZ[i];
+    tau[i] = Math.max(tau[i], 30); tauIn[i] = Math.max(tauIn[i], tau[i]);
+    ice[i] = Math.max(ice[i], sstep(4, 8, wallZ[i] - zg[i]));
+  }
+  // optical depth on one scale day and night (the infrared estimate saturates near ~55, the visible
+  // one goes past 100 in thick cloud)
+  const tauN = new Float32Array(N);
+  for (let i = 0; i < N; i++) tauN[i] = tau[i] * (1 + 0.7 * (1 - wDay[i]));
+
+  // ---- storm anatomy. An ordinary storm is a convective core (the tower and its rain shaft, cloud
+  // down to the LCL) under an anvil: an ice layer a few km deep spreading over clear air, its base
+  // sloping down toward the core. Cores are cold domes in the 10.3 µm tops (overshooting / bubbling
+  // tops, colder than the anvil around them) and small lone cold towers, inside the box or in the
+  // margin around it. Two kinds of cloud stay deep columns throughout: organised systems (a
+  // hurricane's CDO, an MCS shield: cold cloud over most of a ~100 km neighbourhood) and thick decks
+  // (a frontal rain shield, a nimbostratus blob: optically thick, tops 4+ km up, and either tens of
+  // km from the nearest tower, farther at night when the infrared cannot tell a thick anvil from a
+  // deck, or topping out 20+ K below the tropopause, too low for a thunderstorm's anvil). Those are
+  // stratiform: smooth tops, steady rain.
   const hiC = new Float32Array(N), hi = new Float32Array(N);
-  for (let i = 0; i < N; i++) { hiC[i] = valid[i] ? sstep(252, 238, tc[i]) : 0; hi[i] = hiC[i] * sstep(4, 15, tau[i]); }
+  for (let i = 0; i < N; i++) { hiC[i] = valid[i] && !eyeW[i] ? sstep(252, 238, tc[i]) : 0; hi[i] = hiC[i] * sstep(4, 15, tau[i]); }
   const sgA = Math.max(1.5, 8 / cell);
   const hiS = gauss(hi, nx, ny, sgA), btHi = gauss(bt.map((v, i) => v * hi[i]), nx, ny, sgA);
   const core0 = new Float32Array(N);
   for (let i = 0; i < N; i++) {
     const anom = hiS[i] > 0.02 ? btHi[i] / hiS[i] - bt[i] : 0;
-    core0[i] = hi[i] * Math.max(sstep(1, 4, anom), sstep(0.45, 0.2, hiS[i]));
+    // (deep convection only, tops within ~20 K of the tropopause: the bumps on a frontal deck,
+    // 30+ K warmer, are not towers)
+    core0[i] = hi[i] * sstep(tTropA[i] + 32, tTropA[i] + 18, tc[i]) * Math.max(sstep(1.5, 5, anom), sstep(0.45, 0.2, hiS[i]));
   }
   // distances (km) to the nearest core and to the anvil's edge: the anvil's base flares down to the
   // tower over ~10 km, and the anvil thins downstream (a few km deep beside the core, ~1-2 km at its
   // far end) and toward its edges (a wedge, not a wall)
-  const xs = Float32Array.from({ length: N }, (_, i) => i % nx), ys = Float32Array.from({ length: N }, (_, i) => (i / nx) | 0);
-  const distTo = (mask) => {
-    const d = new Float32Array(N).fill(1e3);
-    if (!mask.some((v) => v)) return d;
-    const nxs = fillNearest(xs, mask, nx, ny), nys = fillNearest(ys, mask, nx, ny);
-    for (let i = 0; i < N; i++) d[i] = Math.hypot(xs[i] - nxs[i], ys[i] - nys[i]) * cell;
-    return d;
-  };
-  const dCore = distTo(core0.map((v) => (v > 0.5 ? 1 : 0))), dEdge = distTo(hiC.map((v, i) => (v < 0.5 || tau[i] < 0.3 ? 1 : 0)));
-  const colIce = new Float32Array(N), anvil = new Float32Array(N), thin = new Float32Array(N);
+  const dCore = distField(core0.map((v) => (v > 0.5 ? 1 : 0)), nx, ny, cell);
+  if (dCoreOut) for (let i = 0; i < N; i++) dCore[i] = Math.min(dCore[i], dCoreOut[i]);
+  const dEdge = distField(hiC.map((v, i) => (v < 0.5 || tau[i] < 0.3 ? 1 : 0)), nx, ny, cell);
+  const tauNs = gauss(tauN, nx, ny, Math.max(1, 3 / cell));
+  const colIce = new Float32Array(N), anvil = new Float32Array(N), thin = new Float32Array(N), strat = new Float32Array(N), deck = new Float32Array(N);
   for (let i = 0; i < N; i++) {
-    colIce[i] = Math.max(1 - sstep(1.5, 10, dCore[i]), org ? org[i] : 1);
+    const night = 1 - wDay[i], coreP = 1 - sstep(1.5, 10, dCore[i]), o = org ? org[i] : 1;
+    const far = sstep(30 + 60 * night, 80 + 100 * night, dCore[i]), low = sstep(tTropA[i] + 20, tTropA[i] + 35, tc[i]);
+    deck[i] = sstep(18, 40, tauNs[i]) * Math.max(far, low) * sstep(4, 6.5, zTop[i] - zg[i]);
+    colIce[i] = Math.max(coreP, o, deck[i]);
+    strat[i] = Math.max(o, deck[i]) * (1 - coreP);
     anvil[i] = hiC[i] * (1 - colIce[i]);
     thin[i] = anvil[i] * (1 - (1 - 0.55 * sstep(12, 70, dCore[i])) * (0.3 + 0.7 * sstep(0, 12, dEdge[i])));
   }
@@ -526,8 +629,9 @@ function retrieve({ bt: bt0, red, r16, bt39, bt12, mu, zg: zg0, lat, t, cell, ir
     const pBl = sstep(4, 2.5, above) * sstep(0.4, 2.5, tauIn[i]);
     const pTower = tex[i] * sstep(3, 12, tauIn[i]) * (1 - 0.5 * ice[i] * (1 - deep[i]));
     const pThick = sstep(12, 35, tauIn[i]);
-    let pCol = Math.max(pBl, pTower, pThick, deep[i], pSlope) * (1 - anvil[i]);
+    let pCol = Math.max(pBl, pTower, pThick, deep[i], pSlope, deck[i]) * (1 - anvil[i]);
     if (tauFog[i] > tauIr[i]) pCol = 0;
+    if (eyeW[i]) pCol = 1;
     const bl = Math.max(zg[i] + 0.05, zTop[i] - hLayer);
     let bs = bl + (Math.min(lcl[i], bl) - bl) * pCol;
     bs = Math.max(bs, Math.min(zg[i] + 0.4 * (lcl[i] - zg[i]), zTop[i] - 0.15));
@@ -564,13 +668,30 @@ function retrieve({ bt: bt0, red, r16, bt39, bt12, mu, zg: zg0, lat, t, cell, ir
   const ext = new Float32Array(N);
   for (let i = 0; i < N; i++) ext[i] = clamp(tauS[i] / Math.max(topF[i] - baseF[i], 0.1), 0, 90);
   const conv0 = new Float32Array(N);
-  // anvils: broad, gently lumped tops (not cauliflower towers) and no rain shafts of their own
+  // anvils: broad, gently lumped tops (not cauliflower towers); stratiform decks and CDOs: a smooth,
+  // slightly rolling canopy; the inside of an eyewall: a steep, fairly smooth wall
   for (let i = 0; i < N; i++) {
-    const c = tauFog[i] > tauIr[i] ? 0 : Math.max(tex[i], deep[i]);
-    conv0[i] = c + (Math.min(c, 0.22) - c) * anvil[i];
+    let c = tauFog[i] > tauIr[i] ? 0 : Math.max(tex[i], deep[i]);
+    c += (Math.min(c, 0.22) - c) * anvil[i];
+    c += (Math.min(c, 0.35) - c) * strat[i];
+    conv0[i] = eyeW[i] ? 0.3 : c;
   }
   const conv = gauss(fillNearest(conv0, cloud, nx, ny), nx, ny, 1);
-  const rain = gauss(deep.map((d, i) => d * sstep(35, 90, tau[i]) * sstep(235, 205, tc[i]) * (1 - anvil[i])), nx, ny, Math.max(1, 1.5 / cell));
+  // precipitation (0..1): convective rain under deep, cold, thick tops (cores, eyewalls, squall
+  // lines); stratiform rain, lighter and everywhere, from thick ice decks topping out well above the
+  // freezing level (rain shields, a CDO, an MCS's trailing region); showers from thick liquid towers
+  // by day (tropical / maritime cumulus congestus). None in an eye, and none from an anvil away from
+  // its tower, but rain falls out of the anvil's first ~10 km just ahead of the core.
+  const rain0 = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    if (!valid[i] || eyeW[i] || tauFog[i] > tauIr[i]) continue;
+    // (heaviest in the cores, about half that under a stratiform canopy)
+    const rc = deep[i] * sstep(240, 212, tc[i]) * sstep(18, 55, tauN[i]) * (0.5 + 0.5 * (1 - strat[i]));
+    const rs = 0.5 * ice[i] * sstep(14, 32, tauN[i]) * sstep(4, 6.5, zTop[i] - zg[i]);
+    const rw = 0.35 * (1 - ice[i]) * tex[i] * sstep(30, 60, tau[i]) * wDay[i] * sstep(2.5, 4.5, zTop[i] - lcl[i]);
+    rain0[i] = Math.max(rc, rs, rw) * (1 - anvil[i] * sstep(4, 14, dCore[i]));
+  }
+  const rain = gauss(rain0, nx, ny, Math.max(1, 1.5 / cell));
   const iceF = gauss(fillNearest(ice, cloud, nx, ny), nx, ny, sigIr);
 
   // ---- stats

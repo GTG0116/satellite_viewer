@@ -41,11 +41,14 @@ export async function fetchBytes(url, start, end, signal) { // [start, end)
 }
 
 export class RangeSource {
-  /** head: bytes fetched up front in one request (most NetCDF metadata sits at the start). */
-  constructor(url, size, { head = 256 * 1024, signal } = {}) {
+  /** head: bytes fetched up front in one request (most NetCDF metadata sits at the start);
+   *  tail: bytes at the end fetched alongside it (HDF5 files written in pieces, like the JPSS
+   *  SDRs, keep much of their metadata there). */
+  constructor(url, size, { head = 256 * 1024, tail = 0, signal } = {}) {
     this.url = url; this.size = size; this.signal = signal;
     this.blocks = new Map(); // block index -> Promise<Uint8Array>
     this.head = Math.min(size, head);
+    this.tail = this.head >= size ? 0 : Math.min(size - this.head, tail);
   }
 
   _blocks(b0, b1) {
@@ -56,8 +59,9 @@ export class RangeSource {
       const s = run * BLOCK, e = Math.min(end * BLOCK, this.size);
       const p = fetchBytes(this.url, s, e, this.signal);
       for (let b = run; b < end; b++) {
-        const off = (b - run) * BLOCK;
-        this.blocks.set(b, p.then((u) => u.subarray(off, off + BLOCK)));
+        const off = (b - run) * BLOCK, bp = p.then((u) => u.subarray(off, off + BLOCK));
+        bp.catch(() => {}); // (a prefetched block nobody reads must not fail loudly when cancelled)
+        this.blocks.set(b, bp);
       }
       run = -1;
     };
@@ -72,9 +76,10 @@ export class RangeSource {
   async read(off, n) {
     n = Math.max(0, Math.min(n, this.size - off));
     if (!n) return new Uint8Array(0);
-    if (!this.started && this.head) { // one request for the header region
+    if (!this.started && this.head) { // one request for the header region (and one for the tail)
       this.started = true;
       this._blocks(0, Math.ceil(this.head / BLOCK) - 1);
+      if (this.tail) this._blocks(Math.floor((this.size - this.tail) / BLOCK), Math.ceil(this.size / BLOCK) - 1);
     }
     const b0 = Math.floor(off / BLOCK), b1 = Math.floor((off + n - 1) / BLOCK);
     const parts = await Promise.all(this._blocks(b0, b1));

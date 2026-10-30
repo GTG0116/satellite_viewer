@@ -20,9 +20,18 @@ Everything the Python back end did is done in the browser:
 - **3D cloud volume**: the original three.js volumetric renderer. The cloud retrieval
   (`js/decode/retrieve3d.js`, a port of `backend/render3d.py`) runs in a worker on 5 bands read at
   native resolution inside the box (VIIRS I5 + I1 for polar slices), plus a ~115 km margin from which it
-  judges whether cold cloud is one storm's anvil (an elevated ice layer over its core and rain shaft) or
-  part of an organised system such as a hurricane's CDO (kept as deep columns); ground imagery is Esri
-  World Imagery. With a VR headset the 3D view can be entered in VR (see below).
+  judges whether cold cloud is one storm's anvil (an elevated ice layer over its core and rain shaft;
+  cores are found in the margin too, so an anvil whose tower stands outside the box stays an anvil) or
+  part of an organised system such as a hurricane's CDO (kept as deep columns). Thick decks far from any
+  core, or topping out 20+ K below the tropopause (frontal rain shields, nimbostratus), are deep columns
+  too. Cores need tops within ~20 K of the tropopause, so the bumps on a deck are not towers. Rain comes
+  from three sources. Convective rain falls under cores and eyewalls, about half as heavy under a
+  stratiform canopy, with optical depth put on one scale by day and night. Stratiform rain, lighter and
+  widespread, falls from thick ice decks, and showers from thick warm towers by day. Rain also falls under
+  an anvil's first ~10 km ahead of its core. Hurricane eyes (warm round holes walled in by deep cold cloud)
+  get an eyewall that leans outward with height (the stadium), and decks and CDOs get smooth canopies
+  instead of cauliflower tops. Ground imagery is Esri World Imagery. With a VR headset the 3D view can be
+  entered in VR (see below).
 - **Products** are listed in collapsible sections (RGB composites, visible, infrared, water vapour, then
   the Level-2 clouds / atmosphere / stability / fire / land groups); the section holding the shown
   product opens by itself, and the filter searches all of them.
@@ -44,17 +53,21 @@ True Color (M5 / M4 / M3) and Natural Color (I3 / I2 / I1) from the SDR granules
 channels, rain rate and precipitable water from the MiRS IMG files (`noaa-nesdis-{n20,n21,snpp}-pds`).
 Each frame is a *slice*: the granules that started in one 2 / 5 / 10 / 20 minute window (the *sector*
 buttons), i.e. the strip the satellite scanned then. Day folders are listed from the window's hour
-(`start-after`), so a listing is a few hundred names, not a day's thousands. In the decode workers
-each granule's geolocation is read (750 m GMTCO; older I-band granules fall back to the 375 m GITCO;
-the DNB has its own), every granule's bands are resampled in parallel onto a Lambert azimuthal
-equal-area grid centred on the slice and turned to follow the ground track: each swath pixel claims
+(`start-after`), so a listing is a few hundred names, not a day's thousands. The slice's grid (a
+Lambert azimuthal equal-area grid centred on the slice and turned to follow the ground track) comes
+from each granule's G-Ring outline, one small metadata request per granule. Then each granule is
+one decode job that downloads its geolocation (750 m GMTCO; older I-band granules fall back to the 375 m
+GITCO; the DNB has its own) and its bands at the same time and resamples them onto the grid. The SDR
+files keep metadata at both ends, so the first and last 128 kB are fetched together and a file opens in
+~2 round trips instead of ~5. The merge fits the frame to the pixels. Each swath pixel claims
 the cells within its footprint that no nearer pixel has claimed, so every cell holds its nearest swath
 pixel (I-band pixel centres are placed inside each 16-line scan from the 750 m geolocation; bow-tie
 deleted pixels never claim cells, the overlapping scan fills them). The parts are merged, the DNB gets
 its contrast from the slice (2nd–99.7th percentile of log radiance), and the result is an ordinary
 frame: tiles, smoothing, colour tables, probe, legend and loops work as for geostationary data, and
 the slice's ground track is drawn as its outline. Cells are native size (375 m / 750 m, ATMS 4 km)
-unless the tier's frame budget needs them coarser. A slice is 20–110 MB of downloads, so polar loops
+unless the tier's frame budget needs them coarser; on coarser grids every other pixel is resampled
+(still 1.3+ per cell). A slice is 20–110 MB of downloads, so polar loops
 are capped at 3 / 6 / 12 frames (Low / Medium / High). Visible bands are empty on the night side.
 The 3D cloud volume works on polar slices too, whatever product the map shows: the slice's granules
 are picked by their outlines (the G-Ring in each geolocation file's metadata, a few hundred kB), only

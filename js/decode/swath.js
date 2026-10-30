@@ -2,12 +2,13 @@
  * polar.js). Nothing is interpolated except pixel *positions*: VIIRS I-band pixels nest 2x2 inside
  * the 750 m geolocation, so their centres are placed inside each 16-line scan from those points.
  *
- *   swathGeo    one granule's geolocation (lat / lon arrays, nadir track, edge samples)
- *   swathRing   one granule's outline (G-Ring metadata only)
- *   swathSplat  one granule's bands: every swath pixel claims the grid cells within its footprint
- *               that no nearer pixel has claimed (a distance buffer), giving each cell its nearest
- *               pixel; bow-tie deleted / fill pixels never claim cells (the overlapping scan does)
- *   swathMerge  the granules' parts into one frame (nearest wins), DNB contrast, VIIRS RGBs
+ *   swathGeo     one granule's geolocation (lat / lon arrays, nadir track, edge samples)
+ *   swathRing    one granule's outline (G-Ring metadata only)
+ *   swathGranule one granule's geolocation and bands, downloaded together, then resampled: every
+ *                swath pixel claims the grid cells within its footprint that no nearer pixel has
+ *                claimed (a distance buffer), giving each cell its nearest pixel; bow-tie deleted /
+ *                fill pixels never claim cells (the overlapping scan does)
+ *   swathMerge   the granules' parts into one frame (nearest wins), DNB contrast, VIIRS RGBs
  *   atmsSlice   ATMS footprints (MiRS IMG files) of a slice, the same way with their own footprints
  */
 import { H5File, decodeChunk } from './hdf5.js';
@@ -16,6 +17,8 @@ import { Q16, NAN_CODE } from '../catalog.js';
 import { lonlatToXY, trackTurn } from '../geo.js';
 
 const D2R = Math.PI / 180;
+// JPSS SDR files: metadata at both ends (one request each, in parallel, instead of ~5 in turn)
+const SDR_META = (signal) => ({ head: 128 * 1024, tail: 128 * 1024, signal });
 
 function encoder(kind) {
   const [lo, hi] = Q16[kind], k = 65534 / (hi - lo);
@@ -62,10 +65,8 @@ async function readArray(f, ds) {
 const okLat = (v) => v >= -90 && v <= 90;
 
 // ------------------------------------------------------------------ VIIRS
-export async function swathGeo({ url, size, group }, signal) {
-  const b0 = stats.bytes;
-  const src = new RangeSource(url, size, { head: 64 * 1024, signal });
-  const f = await H5File.open(src);
+async function readGeo({ url, size, group }, signal) {
+  const f = await H5File.open(new RangeSource(url, size, SDR_META(signal)));
   const [dla, dlo] = await Promise.all([f.dataset(`All_Data/${group}/Latitude`), f.dataset(`All_Data/${group}/Longitude`)]);
   const [lat, lon] = await Promise.all([readArray(f, dla), readArray(f, dlo)]);
   const [ny, nx] = dla.shape;
@@ -76,13 +77,19 @@ export async function swathGeo({ url, size, group }, signal) {
     for (const c of [0, 1, 2, nx - 3, nx - 2, nx - 1]) { k = r * nx + c; if (okLat(lat[k])) edge.push([lon[k], lat[k]]); }
   }
   for (const r of [0, ny - 1]) for (let c = 0; c < nx; c += 64) { const k = r * nx + c; if (okLat(lat[k])) edge.push([lon[k], lat[k]]); }
-  return { result: { lat, lon, ny, nx, nadir, edge, bytes: stats.bytes - b0 }, transfer: [lat.buffer, lon.buffer] };
+  return { lat, lon, ny, nx, nadir, edge };
+}
+
+export async function swathGeo(args, signal) {
+  const b0 = stats.bytes;
+  const g = await readGeo(args, signal);
+  return { result: { ...g, bytes: stats.bytes - b0 }, transfer: [g.lat.buffer, g.lon.buffer] };
 }
 
 /** A granule's outline from its geolocation file's metadata (the G-Ring: 8+ [lon, lat] points
  *  around the swath), without reading the geolocation arrays. */
 export async function swathRing({ url, size, group }, signal) {
-  const f = await H5File.open(new RangeSource(url, size, { head: 64 * 1024, signal }));
+  const f = await H5File.open(new RangeSource(url, size, SDR_META(signal)));
   const prod = group.replace(/_All$/, '');
   const a = await f.attrs(`Data_Products/${prod}/${prod}_Gran_0`);
   const la = a.get('G-Ring_Latitude') || [], lo = a.get('G-Ring_Longitude') || [];
@@ -111,7 +118,7 @@ function project(lat, lon, grid) {
 
 /** One VIIRS band as storage codes (uint16 scaled BT / reflectance; DNB radiance as log10). */
 async function bandCodes({ url, size, group, kind }, q, signal) {
-  const src = new RangeSource(url, size, { head: 64 * 1024, signal });
+  const src = new RangeSource(url, size, SDR_META(signal));
   const f = await H5File.open(src);
   const enc = encoder(q);
   if (kind === 'dnb') {
@@ -131,14 +138,24 @@ async function bandCodes({ url, size, group, kind }, q, signal) {
   return out;
 }
 
-/** bands: [{url, size, group, kind, fine, q?, optional?}]; a band's own q overrides q, an
- *  optional band that cannot be read is left empty instead of dropping the granule. */
-export async function swathSplat({ lat, lon, gy, gx, geoKind, grid, bands, q }, signal) {
+/** One granule: geo {url, size, group} and bands [{url, size, group, kind, fine, q?, optional?}]
+ *  are downloaded at the same time, then resampled onto `grid`. A band's own q overrides q; an
+ *  optional band that cannot be read is left empty instead of dropping the granule. clip: false
+ *  lets the part reach past the grid's edges (a slice grid estimated from the granule outlines:
+ *  swathMerge fits the frame to the parts). Returns the part {r0, c0, h, w, dist, codes, nadir}. */
+export async function swathGranule({ geo, geoKind, grid, bands, q, clip = true }, signal) {
   const b0 = stats.bytes;
   // reflective bands on the night side come as near-empty files: no data, not an error
   const read = (b) => bandCodes(b, b.q || q, signal).catch((e) => { if (signal?.aborted) throw e; return null; });
-  const [codesIn, [X, Y]] = await Promise.all([Promise.all(bands.map(read)), Promise.resolve(project(lat, lon, grid))]);
-  const empty = () => ({ result: { r0: 0, c0: 0, h: 0, w: 0, dist: new Float32Array(0), codes: bands.map(() => new Uint16Array(0)), bytes: stats.bytes - b0 } });
+  const [g, codesIn] = await Promise.all([readGeo(geo, signal), Promise.all(bands.map(read))]);
+  const part = splat(g, geoKind, grid, bands, codesIn, clip);
+  part.nadir = g.nadir;
+  part.bytes = stats.bytes - b0;
+  return { result: part, transfer: [part.dist.buffer, ...part.codes.map((o) => o.buffer)] };
+}
+
+function splat({ lat, lon, ny: gy, nx: gx }, geoKind, grid, bands, codesIn, clip) {
+  const empty = () => ({ r0: 0, c0: 0, h: 0, w: 0, dist: new Float32Array(0), codes: bands.map(() => new Uint16Array(0)) });
   const ok = (c) => c && c.length;
   if (!ok(codesIn[0])) return empty();
   for (let j = 1; j < bands.length; j++) {
@@ -146,6 +163,7 @@ export async function swathSplat({ lat, lon, gy, gx, geoKind, grid, bands, q }, 
     if (!bands[j].optional) return empty();
     codesIn[j] = new Uint16Array(codesIn[0].length).fill(NAN_CODE);
   }
+  const [X, Y] = project(lat, lon, grid);
   const nIn = codesIn[0].length;
   const f = Math.round(Math.sqrt(nIn / (gy * gx))) || 1;   // 2: I band on the 750 m geolocation
   const by = gy * f, bx = gx * f;
@@ -153,16 +171,20 @@ export async function swathSplat({ lat, lon, gy, gx, geoKind, grid, bands, q }, 
   // the part of the grid this granule covers
   let rmin = Infinity, rmax = -Infinity, cmin = Infinity, cmax = -Infinity;
   for (let i = 0; i < X.length; i += 7) { const x = X[i], y = Y[i]; if (x === x) { if (x < cmin) cmin = x; if (x > cmax) cmax = x; if (y < rmin) rmin = y; if (y > rmax) rmax = y; } }
-  const r0 = Math.max(0, Math.floor(rmin) - 8), c0 = Math.max(0, Math.floor(cmin) - 8);
-  const r1 = Math.min(grid.ny, Math.ceil(rmax) + 9), c1 = Math.min(grid.nx, Math.ceil(cmax) + 9);
+  // unclipped: up to half the grid again past each edge (a guard against stray geolocation)
+  const er = clip ? 0 : grid.ny >> 1, ec = clip ? 0 : grid.nx >> 1;
+  const r0 = Math.max(-er, Math.floor(rmin) - 8), c0 = Math.max(-ec, Math.floor(cmin) - 8);
+  const r1 = Math.min(grid.ny + er, Math.ceil(rmax) + 9), c1 = Math.min(grid.nx + ec, Math.ceil(cmax) + 9);
   const h = Math.max(0, r1 - r0), w = Math.max(0, c1 - c0);
   const dist = new Float32Array(h * w).fill(Infinity);
   const out = bands.map(() => new Uint16Array(h * w).fill(NAN_CODE));
-  if (!h || !w) return { result: { r0, c0, h, w, dist, codes: out, bytes: stats.bytes - b0 }, transfer: [dist.buffer, ...out.map((o) => o.buffer)] };
-  // pixel size in grid cells (nadir): heavily downsampled grids take every s-th pixel
-  const nadirPx = (Math.hypot(X[(gy >> 1) * gx + (gx >> 1) + 1] - X[(gy >> 1) * gx + (gx >> 1)], Y[(gy >> 1) * gx + (gx >> 1) + 1] - Y[(gy >> 1) * gx + (gx >> 1)]) || 1) / f;
-  const s = Math.max(1, Math.floor(0.6 / nadirPx));
+  if (!h || !w) return { r0, c0, h, w, dist, codes: out };
+  // pixel size in grid cells (nadir): downsampled grids take every s-th pixel (still ~1.3+ a cell)
+  const kn = (gy >> 1) * gx + (gx >> 1);
+  const nadirPx = (Math.sqrt((X[kn + 1] - X[kn]) ** 2 + (Y[kn + 1] - Y[kn]) ** 2) || 1) / f;
+  const s = Math.max(1, Math.floor(0.75 / nadirPx));
   const nb = bands.length, C0 = codesIn[0];
+  const RR = new Float32Array(gy * gx); // footprint radius at each geolocation pixel (0: not yet known)
   for (let ri = 0; ri < by; ri += s) {
     const rg = (ri / f) | 0, scan0 = Math.floor(rg / scanG) * scanG;
     // geolocation row used for spacing / interpolation (rows of the same scan only)
@@ -183,12 +205,17 @@ export async function swathSplat({ lat, lon, gy, gx, geoKind, grid, bands, q }, 
         kg = Math.min(gy - 1, Math.round(mr)) * gx + Math.min(gx - 1, Math.round(mc));
       }
       // footprint radius from the spacing to the next pixel across and along the scan
-      const rgk = (kg / gx) | 0, cgk = kg - rgk * gx;
-      const kc = cgk < gx - 1 ? kg + 1 : kg - 1;
-      const ka = (rgk + 1) % scanG !== 0 && rgk + 1 < gy ? kg + gx : kg - gx;
-      let sc = Math.hypot(X[kc] - X[kg], Y[kc] - Y[kg]), sa = Math.hypot(X[ka] - X[kg], Y[ka] - Y[kg]);
-      if (!(sc === sc)) sc = nadirPx * f; if (!(sa === sa)) sa = sc;
-      const rr = Math.min(8, 0.5 * Math.max(sc, sa) / f * s + 0.5), r2 = rr * rr;
+      let rr = RR[kg];
+      if (rr === 0) {
+        const rgk = (kg / gx) | 0, cgk = kg - rgk * gx;
+        const kc = cgk < gx - 1 ? kg + 1 : kg - 1;
+        const ka = (rgk + 1) % scanG !== 0 && rgk + 1 < gy ? kg + gx : kg - gx;
+        const xg = X[kg], yg = Y[kg];
+        let sc = Math.sqrt((X[kc] - xg) ** 2 + (Y[kc] - yg) ** 2), sa = Math.sqrt((X[ka] - xg) ** 2 + (Y[ka] - yg) ** 2);
+        if (!(sc === sc)) sc = nadirPx * f; if (!(sa === sa)) sa = sc;
+        rr = RR[kg] = Math.min(8, 0.5 * Math.max(sc, sa) / f * s + 0.5);
+      }
+      const r2 = rr * rr;
       const ya = Math.max(r0, Math.ceil(y - rr)), yb = Math.min(r1 - 1, Math.floor(y + rr));
       const xa = Math.max(c0, Math.ceil(x - rr)), xb = Math.min(c1 - 1, Math.floor(x + rr));
       for (let cy = ya; cy <= yb; cy++) {
@@ -206,7 +233,7 @@ export async function swathSplat({ lat, lon, gy, gx, geoKind, grid, bands, q }, 
       }
     }
   }
-  return { result: { r0, c0, h, w, dist, codes: out, bytes: stats.bytes - b0 }, transfer: [dist.buffer, ...out.map((o) => o.buffer)] };
+  return { r0, c0, h, w, dist, codes: out };
 }
 
 // satpy / CIRA style true-colour tone curve (piecewise linear)
@@ -217,14 +244,36 @@ function tone(a) {
   return 1;
 }
 
-export function swathMerge({ parts, grid, nb, q, rgb, all = false }) {
+/** fit: the frame's grid becomes the box of the cells the parts filled (parts may lie partly
+ *  outside `grid`, whose origin and cell size stay). */
+export function swathMerge({ parts, grid, nb, q, rgb, all = false, fit = false }) {
+  if (fit) {
+    let r0 = Infinity, r1 = -Infinity, c0 = Infinity, c1 = -Infinity;
+    for (const p of parts) {
+      for (let r = 0; r < p.h; r++) {
+        const row = p.dist.subarray(r * p.w, (r + 1) * p.w);
+        let a = 0, b = p.w - 1;
+        while (a <= b && row[a] === Infinity) a++;
+        if (a > b) continue;
+        while (row[b] === Infinity) b--;
+        if (p.r0 + r < r0) r0 = p.r0 + r; if (p.r0 + r > r1) r1 = p.r0 + r;
+        if (p.c0 + a < c0) c0 = p.c0 + a; if (p.c0 + b > c1) c1 = p.c0 + b;
+      }
+    }
+    if (r0 > r1) throw new Error(q === 'refl' ? 'No daylight in this slice: visible bands are empty on the night side (try an infrared band or the Day/Night Band)' : 'No data in this slice');
+    r0 -= 2; c0 -= 2; r1 += 2; c1 += 2;
+    grid = { ...grid, x0: grid.x0 + c0 * grid.dx, y0: grid.y0 + r0 * grid.dy, nx: c1 - c0 + 1, ny: r1 - r0 + 1 };
+    parts = parts.map((p) => ({ ...p, r0: p.r0 - r0, c0: p.c0 - c0 }));
+  }
   const N = grid.nx * grid.ny, W = grid.nx;
   const codes = Array.from({ length: nb }, () => new Uint16Array(N).fill(NAN_CODE));
   const dist = new Float32Array(N).fill(Infinity);
   for (const p of parts) {
-    for (let r = 0; r < p.h; r++) {
+    // (rows / columns of a part outside the grid are skipped)
+    const ca = Math.max(0, -p.c0), cb = Math.min(p.w, W - p.c0);
+    for (let r = Math.max(0, -p.r0); r < Math.min(p.h, grid.ny - p.r0); r++) {
       const src = r * p.w, dst = (p.r0 + r) * W + p.c0;
-      for (let c = 0; c < p.w; c++) {
+      for (let c = ca; c < cb; c++) {
         const d = p.dist[src + c];
         if (d < dist[dst + c]) {
           dist[dst + c] = d;

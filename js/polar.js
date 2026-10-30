@@ -122,6 +122,11 @@ export function polarPlan({ sat, sector, product }, budget) {
     rgb: !!src.rgb, bands: src.bands, roles: {}, k: {}, ko: 1, win2: [0, 0, 0, 0], full: true };
 }
 
+/** Nadir track and outline of a granule from its G-Ring: 8 points, three down each swath edge and
+ *  the nadir points of its first and last scans (at 3 and 7). Only the grid's centre, turn and
+ *  cell size come from these: swathMerge fits the frame to the pixels. */
+const ringPart = (ring) => ({ nadir: [ring[3], ring[7]], edge: ring });
+
 /** Local equal-area grid holding a slice: centred on its mean nadir point, cells at the native
  *  resolution unless the slice needs more cells than the budget allows. */
 function sliceGrid(parts, km, framePx) {
@@ -154,22 +159,25 @@ export async function loadPolarFrame(p, scan, pool, { pri = 5, signal, key } = {
     r = await pool.run('atmsSlice', { files: scan.granules.map((g) => ({ url: s3url(bucket, g.bands[0].key), size: g.bands[0].size })),
       product: p.product, ch: src.ch, q: src.q, km: src.km, framePx: p.framePx }, { pri, signal });
   } else {
-    // 1) geolocation of every granule (in parallel), 2) the grid, 3) each granule's bands resampled
-    //    onto its part of the grid (in parallel), 4) the parts merged
-    const geos = await Promise.all(scan.granules.map((g) => pool.run('swathGeo', { url: s3url(bucket, g.geo.key), size: g.geo.size,
-      group: VIIRS_GEO[g.geo.kind][2] }, { pri, signal })));
-    const km = src.km;
-    const grid = sliceGrid(geos, km, p.framePx);
-    const parts = await Promise.all(scan.granules.map((g, i) => {
-      const geo = geos[i];
-      return pool.run('swathSplat', { lat: geo.lat, lon: geo.lon, gy: geo.ny, gx: geo.nx, geoKind: g.geo.kind, grid,
-        bands: src.bands.map((b, j) => ({ url: s3url(bucket, g.bands[j].key), size: g.bands[j].size, group: VIIRS[b][5], kind: VIIRS[b][2], fine: VIIRS[b][6] === 'I' })),
-        q: src.q }, { pri, signal, transfer: [geo.lat.buffer, geo.lon.buffer] });
+    // 1) each granule's outline (G-Ring metadata: one small request each, in parallel), 2) the
+    //    grid from them, 3) each granule's geolocation and bands downloaded together and resampled
+    //    onto its part of the grid (in parallel), 4) the parts merged, the grid fitted to them.
+    //    A granule without an outline has its geolocation read first instead.
+    const geoArgs = (g) => ({ url: s3url(bucket, g.geo.key), size: g.geo.size, group: VIIRS_GEO[g.geo.kind][2] });
+    const outlines = await Promise.all(scan.granules.map(async (g) => {
+      const ring = await pool.run('swathRing', geoArgs(g), { pri, signal }).catch((e) => { if (signal?.aborted) throw e; return null; });
+      if (ring?.length === 8) return ringPart(ring);
+      const geo = await pool.run('swathGeo', geoArgs(g), { pri, signal });
+      return { nadir: geo.nadir, edge: geo.edge };
     }));
-    r = await pool.run('swathMerge', { parts, grid, nb: src.bands.length, q: src.q, rgb: src.rgb ? p.product : null }, { pri, signal,
+    const grid = sliceGrid(outlines, src.km, p.framePx);
+    const parts = await Promise.all(scan.granules.map((g) => pool.run('swathGranule', { geo: geoArgs(g), geoKind: g.geo.kind, grid, clip: false,
+      bands: src.bands.map((b, j) => ({ url: s3url(bucket, g.bands[j].key), size: g.bands[j].size, group: VIIRS[b][5], kind: VIIRS[b][2], fine: VIIRS[b][6] === 'I' })),
+      q: src.q }, { pri, signal })));
+    r = await pool.run('swathMerge', { parts, grid, nb: src.bands.length, q: src.q, rgb: src.rgb ? p.product : null, fit: true }, { pri, signal,
       transfer: parts.flatMap((pt) => [pt.dist.buffer, ...pt.codes.map((c) => c.buffer)]) });
-    r.track = [].concat(...geos.map((g) => g.nadir));
-    r.bytes = geos.reduce((a, g) => a + g.bytes, 0) + parts.reduce((a, pt) => a + pt.bytes, 0);
+    r.track = [].concat(...parts.map((pt) => pt.nadir));
+    r.bytes = parts.reduce((a, pt) => a + pt.bytes, 0);
   }
   const g = r.grid;
   const frame = { key, sat: p.sat, sector: p.sector, product: p.product, time: scan.t, bytes: r.bytes, plan: p, scan,
@@ -244,15 +252,12 @@ export async function loadPolarBox(sat, t, minutes, bbox, pool, { pri = 0, progr
   const mb = used.reduce((a, g) => a + g.bytes, 0) / 1e6;
   progress(`Loading VIIRS I5 + I1 · ${used.length} granule${used.length > 1 ? 's' : ''} · ≈${mb.toFixed(0)} MB…`);
   const parts = await Promise.all(used.map(async (g) => {
-    const geo = await pool.run('swathGeo', geoArgs(g), { pri, signal });
     const band = (b, j, q, optional) => (g.bands[j] ? { url: s3url(s.bucket, g.bands[j].key), size: g.bands[j].size, group: VIIRS[b][5], kind: VIIRS[b][2],
       fine: true, q, optional } : null);
     const bands = [band('i5', 0, 'bt', false), band('i1', 1, 'refl', true)].filter(Boolean);
-    const part = await pool.run('swathSplat', { lat: geo.lat, lon: geo.lon, gy: geo.ny, gx: geo.nx, geoKind: g.geo.kind, grid, bands, q: 'bt' },
-      { pri, signal, transfer: [geo.lat.buffer, geo.lon.buffer] });
+    const part = await pool.run('swathGranule', { geo: geoArgs(g), geoKind: g.geo.kind, grid, bands, q: 'bt' }, { pri, signal });
     // a granule read without I1 (none posted): an empty I1 part keeps the band count
     if (part.codes.length < 2) part.codes.push(new Uint16Array(part.codes[0].length).fill(NAN_CODE));
-    part.bytes += geo.bytes;
     return part;
   }));
   let r;
